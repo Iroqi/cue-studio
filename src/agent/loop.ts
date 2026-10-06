@@ -1,0 +1,530 @@
+import { Type, validateToolCall, type AssistantMessage, type Context, type Message, type SystemMessage, type TextContent, type Tool, type ToolCall } from "@earendil-works/pi-ai";
+import type { Stage } from "../engine/runtime";
+import type { Op } from "../engine/types";
+import { directorTools, type TeachingState } from "../tools/director";
+import { GRAMMAR, PAINTER, stateSections } from "./prompt";
+import { missesOn, record as archiveAttempt, summary as learnerHistory } from "./archive";
+import { streamTurn, type LlmConfig, type Role, type TurnEvents, type TurnResult } from "../llm/llm";
+
+const PAINT_TOOL: Tool = {
+  name: "paint",
+  description:
+    "Delegate one prop's artwork to the stage painter (a separate, faster model). Give it a brief: what the object is, what relation it must make visible, and what the learner should notice. The drawing streams onto the stage as it is generated.",
+  parameters: Type.Object({
+    id: Type.String({ description: "prop id already placed by stage_script, or a new one" }),
+    brief: Type.String({ description: "what to draw and why — the idea, not the coordinates" }),
+    scene: Type.Optional(Type.String({ description: "scene for a brand new prop" })),
+    x: Type.Optional(Type.Number({ description: "new prop only: world x" })),
+    y: Type.Optional(Type.Number({ description: "new prop only: world y" })),
+    w: Type.Optional(Type.Number({ description: "new prop only: width" })),
+    h: Type.Optional(Type.Number({ description: "new prop only: height" })),
+  }),
+};
+
+/** A free tier throttles by tokens per minute, so a 429 is a window to wait out, not a failure. */
+const RATE_LIMIT = /429|rate.?limit|too many requests|速率限制|限流/i;
+const RETRIES = 3;
+const WAIT_MS = 12000;
+
+/** A reasoning model can spend its whole output budget on thinking and stop mid-thought. Twice it gets told to commit to verbs. */
+const TRUNCATED_MAX = 2;
+
+/** Anything the stage can act on: a verb to run, or a line to put on the clock. */
+function hasStageable(m: AssistantMessage): boolean {
+  return m.content.some((c) => c.type === "toolCall" || (c.type === "text" && c.text.trim().length > 0));
+}
+
+function extractSvg(acc: string): string | undefined {
+  const cleaned = acc.replace(/^[\s\S]*?(?=<svg)/i, "").replace(/```/g, "");
+  const m = cleaned.match(/<svg[\s\S]*<\/svg>/i);
+  if (m) return m[0];
+  if (!/<svg/i.test(cleaned)) return undefined;
+  // Still streaming: drop the half-written tag at the tail so the DOM never sees `viewBox="v`.
+  const open = cleaned.lastIndexOf("<");
+  const closed = cleaned.lastIndexOf(">");
+  return (open > closed ? cleaned.slice(0, open) : cleaned) + "</svg>";
+}
+
+export interface TeacherEvents {
+  onStatus?: (s: string) => void;
+  onText?: (role: string, delta: string) => void;
+  /** A new director turn begins: the host starts a fresh line instead of appending to the last. */
+  onTurnStart?: (beatNo: number) => void;
+  /** The director is working (true) / the stage is handed back to the learner (false). */
+  onBusy?: (busy: boolean) => void;
+  onUsage?: (u: { input: number; output: number; cost: number; calls: number }) => void;
+}
+
+export class Teacher {
+  messages: Message[] = [];
+  teaching: TeachingState = { title: "", concepts: [], learner: "", beatsDone: 0 };
+  busy = false;
+  /** The seq of the question the main turn is parked on, waiting for a real answer. */
+  private parkedGate: number | null = null;
+  private usage = { input: 0, output: 0, cost: 0, calls: 0 };
+  private abort = new AbortController();
+  private idleWaiters: (() => void)[] = [];
+  /** What the director's head held just before each turn — the only way back into a re-take. */
+  private turnSnap = new Map<number, { messages: Message[]; teaching: TeachingState }>();
+  private tools: Tool[];
+  private runVerb: (name: string, args: Record<string, unknown>) => { ops: Op[]; result: string; isError?: boolean };
+
+  private stage: Stage;
+  private cfg: LlmConfig;
+  private ev: TeacherEvents;
+
+  constructor(stage: Stage, cfg: LlmConfig, ev: TeacherEvents = {}) {
+    this.stage = stage;
+    this.cfg = cfg;
+    this.ev = ev;
+    const d = directorTools(stage, this.teaching);
+    this.runVerb = d.run;
+    this.tools = [...d.tools, PAINT_TOOL];
+  }
+
+  setConfig(cfg: LlmConfig) {
+    this.cfg = cfg;
+  }
+
+  stop() {
+    this.abort.abort();
+  }
+
+  /** System sections, with this learner's proven misses attached when there are any. */
+  private sections() {
+    return stateSections(this.teaching, this.stage.agentSnapshot(), learnerHistory(this.teaching.title));
+  }
+
+  private syncSections() {
+    const head = this.messages[0];
+    if (head?.role === "system") {
+      head.sections = this.sections();
+    }
+  }
+
+  private ensureLead() {
+    if (this.messages.length === 0) {
+      this.messages.push({
+        role: "system",
+        content: GRAMMAR,
+        sections: this.sections(),
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  /** One learner utterance in the main line. */
+  async say(text: string) {
+    this.ensureLead();
+    if (this.teaching.title === "" && text.trim().length < 120) this.teaching.title = text.trim();
+    this.messages.push({ role: "user", content: text, timestamp: Date.now() });
+    await this.spin("main");
+  }
+
+  /**
+   * Whether the next words go onto this board or cut into it as an aside. Only what the director is
+   * producing *right now* can be interrupted: once a turn is over the stage belongs to the learner's
+   * next sentence, even if the tape is still rolling. The host asks here because it has to put the
+   * same answer on the button the learner presses.
+   */
+  continuesBoard() {
+    return !this.busy;
+  }
+
+  /**
+   * The next thing the learner says. Most of the time it continues the same performance on the main
+   * line — the board is a workspace the lesson keeps, so nothing is rewound and nothing is cleared.
+   * Only a remark thrown in while the director is still working is an aside: that one steps back
+   * and re-performs the cut.
+   */
+  async respond(text: string) {
+    // A question is standing on the stage with the clock stopped for it: what the learner says next
+    // IS its answer. Handing it to the parked turn is also the only way to avoid a second director
+    // working on one transcript while the first is still waiting.
+    if (this.parkedGate !== null) {
+      this.ev.onStatus?.("把你的话当作对那个问题的回答。");
+      this.stage.answerGate(text);
+      return;
+    }
+    if (this.continuesBoard()) {
+      await this.say(text);
+      if (this.stage.live && !this.stage.playing) this.stage.play();
+      return;
+    }
+    await this.interrupt(text);
+  }
+
+  /**
+   * An interruption plays on its own track. When it is over, the main clock is rewound to
+   * the beat it was cut off at, so the interrupted passage is re-performed rather than lost.
+   */
+  async interrupt(text: string) {
+    const resumeAt = this.stage.t;
+    const track = this.stage.beginAside();
+    this.ev.onStatus?.(`插播：${track}`);
+    const aside: Message[] = [
+      {
+        role: "system",
+        content: GRAMMAR + "\n\n# 现在的状况\n学习者打断了演出提问。先用舞台回答他（可以复用已有的道具），说完就停。不要重新展开整个论证。",
+        sections: this.sections(),
+        timestamp: Date.now(),
+      },
+      { role: "user", content: text, timestamp: Date.now() },
+    ];
+    await this.spin("aside", aside, track);
+    this.stage.endAside();
+    this.stage.seek(resumeAt);
+    this.messages.push({
+      role: "user",
+      content: `（学习者刚才打断问：${text}。你已经用插播回答过了。现在回到被打断的那一拍，从那里继续原来的演出。）`,
+      timestamp: Date.now(),
+    });
+    this.ev.onStatus?.("回到主线，重演被打断的那一拍");
+    await this.spin("main");
+  }
+
+  /** The output ceiling the director is actually running under — the number to name when it starves. */
+  private ceiling(): number {
+    const p = this.cfg.providers.find((x) => x.id === this.cfg.director.provider);
+    return p?.models.find((m) => m.id === this.cfg.director.model)?.maxTokens ?? 0;
+  }
+
+  /**
+   * One model call, waited out when the provider throttles. Both roles draw on the same
+   * tokens-per-minute budget, so a painter that fails on the first 429 hands the director an error he
+   * can only answer by asking for the same artwork again — burning the window a second time.
+   */
+  private async ask(role: Role, context: Context, events: TurnEvents): Promise<TurnResult> {
+    for (let retry = 0; ; retry++) {
+      try {
+        return await streamTurn(this.cfg, role, context, events, this.abort.signal);
+      } catch (e) {
+        if (this.abort.signal.aborted) throw e;
+        if (!RATE_LIMIT.test((e as Error).message) || retry >= RETRIES) throw e;
+        const hold = WAIT_MS * (retry + 1);
+        this.ev.onStatus?.(`${role === "painter" ? "美工" : "导演"}被服务商限流，等 ${Math.round(hold / 1000)} 秒后自己重试（第 ${retry + 1}/${RETRIES} 次）…`);
+        await this.sleep(hold);
+      }
+    }
+  }
+
+  private async spin(where: string, transcript: Message[] = this.messages, track = "main") {
+    this.ensureLead();
+    this.busy = true;
+    this.ev.onBusy?.(true);
+    let truncated = 0;
+    try {
+      for (let turn = 0; turn < 24; turn++) {
+        if (this.abort.signal.aborted) return;
+        const isAside = transcript !== this.messages;
+        const beatNo = this.stage.log.nextTurn();
+        if (isAside) {
+          (transcript[0] as SystemMessage).sections = this.sections();
+        } else {
+          this.syncSections();
+          this.turnSnap.set(beatNo, { messages: transcript.slice(), teaching: structuredClone(this.teaching) });
+        }
+        this.ev.onTurnStart?.(beatNo);
+        this.ev.onStatus?.(`导演思考中（第 ${beatNo} 拍）…`);
+        let message: AssistantMessage;
+        try {
+          message = (
+            await this.ask(
+              "director",
+              { messages: transcript, tools: this.tools },
+              {
+                onText: (d) => this.ev.onText?.("director", d),
+                onToolArgs: (name, args) => this.previewArgs(name, args, track),
+              },
+            )
+          ).message;
+        } catch (e) {
+          // An abort is our own doing (重来 / 重排), not something to report as a failure.
+          if (this.abort.signal.aborted) return;
+          this.ev.onStatus?.(`出错：${(e as Error).message}`);
+          return;
+        }
+        this.tally(message);
+        // A turn cut off by the output ceiling is not a finished turn. Reasoning models can spend the
+        // whole budget on thinking, stop with no verb and no line, and leave the board empty — while a
+        // 20k-char lump of abandoned thinking would ride in the transcript and be billed every turn
+        // after. So: count the waste, keep it out of his head, and make him commit to verbs instead.
+        if (message.stopReason === "length" && !hasStageable(message)) {
+          if (++truncated > TRUNCATED_MAX) {
+            this.ev.onStatus?.(`这一拍被输出上限拦腰截断（当前上限 ${this.ceiling()} tokens）：只想不写，台上一个东西都没落下。把推理强度调低一档，或在模型配置里把该模型的 max tokens 调大，再开场。`);
+            return;
+          }
+          this.ev.onStatus?.(`模型把这一拍的输出全花在思考上，没留下任何上台的东西 —— 让它改用动词重来（第 ${truncated}/${TRUNCATED_MAX} 次）。`);
+          transcript.push({
+            role: "user",
+            content:
+              "上一回合只有思考，被输出上限截断，台上什么都没有。这一回合不要再展开推理：想清楚要演的第一件事，直接把它做成工具调用（stage_script / build / narrate / camera / ask_learner），思考只留一句。",
+            timestamp: Date.now(),
+          } as Message);
+          continue;
+        }
+        transcript.push(message);
+        truncated = 0;
+        if (message.stopReason !== "toolUse") {
+          this.sayProse(message, track);
+          this.ev.onStatus?.(where === "main" ? "这一段讲完了，黑板不清 —— 接着说。" : "插播结束");
+          return;
+        }
+        const calls = message.content.filter((c): c is ToolCall => c.type === "toolCall");
+        for (const call of calls) {
+          if (this.abort.signal.aborted) return;
+          const out = await this.execute(call, track);
+          transcript.push({
+            role: "toolResult",
+            toolCallId: call.id,
+            toolName: call.name,
+            content: [{ type: "text" as const, text: out.result }],
+            isError: !!out.isError,
+            timestamp: Date.now(),
+          } as Message);
+        }
+      }
+      this.ev.onStatus?.("这一节先到这里（一拍讲不了更多）—— 接着说就往下演。");
+    } finally {
+      this.busy = false;
+      this.ev.onBusy?.(false);
+      for (const wake of this.idleWaiters.splice(0)) wake();
+    }
+  }
+
+  whenIdle(): Promise<void> {
+    return this.busy ? new Promise<void>((r) => this.idleWaiters.push(r)) : Promise.resolve();
+  }
+
+  /**
+   * A turn that ends in prose instead of verbs still said something. Left out of the log, an
+   * interruption becomes a scene where the learner asked, the teacher answered, and nothing on
+   * stage changed — so put the line on the clock like any other narration.
+   */
+  private sayProse(message: AssistantMessage, track: string) {
+    const text = message.content
+      .filter((c): c is TextContent => c.type === "text")
+      .map((c) => c.text)
+      .join("\n")
+      .replace(/[*_`#]/g, "")
+      .trim();
+    if (!text) return;
+    this.stage.append([{ kind: "narrate", text, duration: Math.min(24000, Math.max(2000, text.length * 200)) }], track);
+  }
+
+  canReroll(turn: number): boolean {
+    return this.turnSnap.has(turn);
+  }
+
+  /**
+   * Cut the performance at one of its beats and re-stage it: the log loses everything from
+   * that op onward, the director's head is put back to what it held before that turn, and the
+   * critic's line is what sends it off again. A loaded recording has no head to go back to.
+   */
+  async rerollFrom(seq: number, critique: string) {
+    this.abort.abort();
+    await this.whenIdle();
+    this.abort = new AbortController();
+    const entry = this.stage.log.entryAt(seq);
+    const snap = entry ? this.turnSnap.get(entry.turn) : undefined;
+    if (!entry || !snap) {
+      this.ev.onStatus?.("这一拍没有可回去的排练现场（只有正在排的这场有；录像只能重放，不能改）。");
+      return;
+    }
+    for (const t of [...this.turnSnap.keys()]) if (t >= entry.turn) this.turnSnap.delete(t);
+    Object.assign(this.teaching, snap.teaching);
+    this.messages.splice(0, this.messages.length, ...snap.messages);
+    const at = this.stage.rerollFrom(seq);
+    this.messages.push({
+      role: "user",
+      content:
+        `（${at > 0 ? `第 ${entry.turn} 拍从 ${Math.round(at)}ms 开始的部分撤下来重排。` : `第 ${entry.turn} 拍撤下来重排。`}` +
+        `${critique.trim() ? `问题在于：${critique.trim()}。` : "换个排法。"}不要重复上一版的说法和调度。）`,
+      timestamp: Date.now(),
+    });
+    this.ev.onStatus?.(`重排第 ${entry.turn} 拍…`);
+    await this.spin("main");
+  }
+
+  /** Partial arguments while still streaming: the tape head, not the tape. */
+  private previewArgs(name: string, args: Record<string, unknown>, track: string) {
+    if (name !== "build" && name !== "draw") return;
+    const id = typeof args.id === "string" ? args.id : "";
+    if (!id) return;
+    const svg = typeof args.svg === "string" ? args.svg : undefined;
+    if (!svg) return;
+    this.stage.setPreview(id, {
+      svg: extractSvg(svg),
+      box: {
+        x: Number(args.x ?? 0),
+        y: Number(args.y ?? 0),
+        w: Number(args.w ?? 400),
+        h: Number(args.h ?? 300),
+      },
+      scene: typeof args.scene === "string" ? args.scene : "scene-1",
+      label: typeof args.label === "string" ? args.label : id,
+    });
+    void track;
+  }
+
+  private async execute(call: ToolCall, track: string): Promise<{ result: string; isError?: boolean }> {
+    let args: Record<string, unknown> = { ...(call.arguments ?? {}) };
+    try {
+      args = (validateToolCall(this.tools, call) as Record<string, unknown>) ?? args;
+    } catch (e) {
+      return { result: `参数不合法：${(e as Error).message}。请重新给出 ${call.name}。`, isError: true };
+    }
+
+    if (call.name === "paint") {
+      const id = String(args.id);
+      const brief = String(args.brief ?? "");
+      const scene = this.stage.compiled.props.get(id)?.scene ?? String(args.scene ?? "scene-1");
+      const existing = this.stage.compiled.props.get(id);
+      if (!existing) {
+        // A brief with no coordinates is a request to draw something the audience can see, not at
+        // the origin of an infinite plane.
+        const here = args.x === undefined && args.y === undefined;
+        this.stage.append(
+          [
+            {
+              kind: "build",
+              id,
+              scene,
+              label: brief.slice(0, 60),
+              here: here || undefined,
+              box: { x: Number(args.x ?? 0), y: Number(args.y ?? 0), w: Number(args.w ?? 400), h: Number(args.h ?? 300) },
+            },
+          ],
+          track,
+        );
+      }
+      const box = this.stage.compiled.props.get(id)!.revisions.slice(-1)[0].box;
+      this.ev.onStatus?.(`美工绘制 ${id} …`);
+      let acc = "";
+      let res: TurnResult;
+      try {
+        res = await this.ask(
+          "painter",
+          {
+            systemPrompt: PAINTER,
+            messages: [
+              {
+                role: "user",
+                content: `道具：${id}\n舞台位置：${Math.round(box.w)}x${Math.round(box.h)}，在场景 ${scene}\n编导的要求：${brief}`,
+                timestamp: Date.now(),
+              },
+            ],
+          },
+          {
+            onText: (d) => {
+              acc += d;
+              const svg = extractSvg(acc);
+              if (svg) this.stage.setPreview(id, { svg, box, scene, label: brief.slice(0, 60) });
+            },
+          },
+        );
+      } catch (e) {
+        return { result: `美工失败：${(e as Error).message}`, isError: true };
+      }
+      this.tally(res.message);
+      const svg = extractSvg(acc);
+      this.stage.clearPreview(id);
+      if (!svg) return { result: `美工没有产出可用的 svg（收到 ${acc.length} 字符）`, isError: true };
+      this.stage.append([{ kind: "patch", id, svg }], track);
+      this.ev.onStatus?.(`画好 ${id}`);
+      return { result: `painted ${id} (${Math.round(box.w)}x${Math.round(box.h)})` };
+    }
+
+    const out = this.runVerb(call.name, args);
+    if (out.ops.length) this.stage.append(out.ops, track);
+    for (const op of out.ops) {
+      if (op.kind === "build" || op.kind === "patch") this.stage.clearPreview(op.id);
+    }
+    if (out.result.startsWith("question queued") || out.result.startsWith("stage clock will stop")) {
+      const gates = this.stage.openGateSeqs();
+      const seq = gates[gates.length - 1];
+      this.stage.play();
+      this.ev.onStatus?.("等学习者回答…");
+      this.parkedGate = seq;
+      const answer = await this.waitForAnswer(seq);
+      this.parkedGate = null;
+      if (answer === null) return { result: "（这一拍撤了下来，学习者没有作答）", isError: true };
+      return { result: this.settleGate(seq, answer) };
+    }
+    return out;
+  }
+
+  /**
+   * The verdict is computed here rather than handed up by the button that was clicked: the model
+   * is told which option was correct and is shown its own reason, so it can't be flattered by the
+   * interface. Only a quiz choice is evidence — a pause the learner clicked through records nothing.
+   */
+  private settleGate(seq: number, answer: string): string {
+    const quiz = this.stage.compiled.gates.find((g) => g.seq === seq)?.op;
+    if (!quiz || quiz.kind !== "quiz") return `学习者回答：${answer}`;
+    const choice = quiz.options.indexOf(answer);
+    // Free text is not a graded choice: it is evidence of how he put it, and nothing more.
+    if (choice < 0) return `学习者没有选选项，直接说了：「${answer}」。这就是他现在的理解，从它出发继续演；不要替他宣布对错，也别把这句话当成答对了。`;
+    const correct = choice === quiz.answer;
+    // Counted before recording, so "how many times has he fallen here" is the history, not this answer.
+    const prior = missesOn(this.teaching.title, quiz.concept);
+    archiveAttempt({
+      at: Date.now(),
+      topic: this.teaching.title,
+      prompt: quiz.prompt,
+      options: quiz.options,
+      choice,
+      answer: quiz.answer,
+      correct,
+      concept: quiz.concept,
+    });
+    const right = quiz.options[quiz.answer] ?? "？";
+    const here = quiz.concept ? `「${quiz.concept}」这一处` : "这一处";
+    return [
+      `学习者选了「${answer}」。${correct ? "答对了。" : `答错了 —— 正确的是「${right}」。`}`,
+      quiz.why ? `你当初给这道题的理由：${quiz.why}` : "",
+      correct
+        ? prior > 0
+          ? `${here}他以前错过 ${prior} 次，这次答对了：可以往前走，但别当成他天生会了。`
+          : "这一题是证据，可以往前走。别把它当成整个概念已经讲通。"
+        : prior > 0
+          ? `${here}他已经是第 ${prior + 1} 次错过，换过问法也没用。再画一遍同样的形状没有意义：换个载体重演 —— 一组能对上的数字、motion 让它自己走一遍、或者把他错的那个形状就留在台上和正确的并置 —— 演完用同样的 concept 再问一次。`
+          : `他挑的是「${answer}」，说明在那个位置他的形状和正确的形状不一样。不要重复正确选项：把这两个形状摆到同一个舞台上比一次。`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  /** A blocked turn must be liftable: re-performing a passage starts by letting go of it. */
+  private waitForAnswer(seq: number): Promise<string | null> {
+    const aborted = new Promise<null>((resolve) => {
+      if (this.abort.signal.aborted) return resolve(null);
+      this.abort.signal.addEventListener("abort", () => resolve(null), { once: true });
+    });
+    return Promise.race([this.stage.waitForGate(seq), aborted]);
+  }
+
+  /** A wait that 重来 can cut through immediately. */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((r) => {
+      const t = setTimeout(r, ms);
+      this.abort.signal.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(t);
+          r();
+        },
+        { once: true },
+      );
+    });
+  }
+
+  private tally(m: { usage?: { input: number; output: number; cost?: { total?: number } } }) {
+    if (!m.usage) return;
+    this.usage.input += m.usage.input;
+    this.usage.output += m.usage.output;
+    this.usage.cost += m.usage.cost?.total ?? 0;
+    this.usage.calls += 1;
+    this.ev.onUsage?.(this.usage);
+  }
+}
