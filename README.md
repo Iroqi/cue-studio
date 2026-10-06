@@ -32,10 +32,13 @@
 
 道具的坐标是它的**锚点**，不是某一帧。想让一个东西自己动，是发一个 motion cue，不是一帧帧重画。
 
-## 导演能说什么（18 个动词）
+第二条规则：**时钟不许跑在画面前面**。首次演出时，只要镜头框住一个还没有任何图形的空框、而它的 `paint` 正在进行，`tick()` 就不推进 `t`（`playing` 保持 true，rAF 继续转，所以美工一交图它自己接上走）。美工开始流式吐线的那一刻就放行 —— 3b1b 的节奏是"边画边讲"，毛病出在"讲完了画还没出现"。重放时 `live=false`，画面早就在日志里，不需要等。
+
+## 导演能说什么（19 个动词）
 
 - 编排：`stage_script`（一次调用铺好整场骨架：每拍说什么、多长、镜头怎么动、道具落在哪）
-- 立道具：`build` `draw`（`draw` 把图形交给美工模型生成）`move` `discard` `recall` `link` `fetch_prop`
+- 立道具：`build` `draw`（导演自己给 svg/html/scene3d）`move` `discard` `recall` `link` `fetch_prop`
+- 交给美工：`paint`（只描述"它是什么、要表达什么关系"，图形由第二个模型生成，逐笔长在舞台上；画坏了就把这个刚立起来的空框撤掉）
 - 观看：`camera`（fit / focus / pan / zoom / track，特写取道具自身的一个部位分数点）`transition`（dissolve / wipe / match-cut / split）`highlight`（pulse / outline / dim-rest / shake）`motion`
 - 时钟：`narrate`（三种上屏方式：caption 底下一行字 / verse 整句落在板心 / voice 只出声不上字）`beat`
 - 回路：`ask_learner`（带 `concept`，答完才继续，答案作为工具结果回来，导演据此分叉）`pause_for`
@@ -46,6 +49,10 @@
 ## 两个角色
 
 导演负责编排，美工（`PAINTER`）只画图不说话，产出一个内联 `<svg>`。你会看到它在舞台上逐笔长出来。两条路径共用同一个 `Teacher.ask()`，所以服务商限流的退避对两个角色一视同仁 —— 美工失败不再是"把错误文本回给导演、让他再烧一次限流窗口"。
+
+美工的契约是**透明背景**：舞台本身就是一块深色黑板（带底色和网格），道具是直接画在它上面的，所以不许交满幅矩形、不许写 `background`。契约之外还有兜底：`StageView` 在注入 shadow root 之后，把 svg 的**第一个直接子 `<rect>`** 剥掉 —— 条件是它不透明（含 SVG 默认的"无 fill = 黑"）、无边框、起点在画面角上且盖住 90% 以上 viewBox。带 `fill-opacity`、留了边距的托底块、`fill="none"` 的边框框都原样保留。
+
+取景有下限：部位特写（`camera` 的 `at`/`span`，默认 span 0.45）和 `zoom` 都不会把画面框收进 260 世界单位以内 —— 美工的最小字号是 28 单位，超过六倍放大字就不再是字了。
 
 ## 3D 是数据，不是代码
 
@@ -60,6 +67,14 @@
 模型只能交 markup，不能交代码。`sanitize()` 剥掉 `script` / `iframe` / `object` / `embed` / `link` / `meta` 六类标签、所有 `on*=` 内联事件、以及 `javascript:` 伪协议；道具在 shadow root 里渲染（作用域隔离，模型写的 CSS 动不到外壳）。
 
 代价：板上的东西不会自己跑逻辑。收益：日志可信、可重放、可分享，且不用担心任意代码执行。
+
+## 哪些轮子是借的，哪些是自己造的
+
+借的：`@earendil-works/pi-ai`（模型传输、流式、凭据、faux provider）、`three`（3D 图形栈）、浏览器自己的 SVG/HTML/CSS 引擎（2D 表达面就是标准 DOM，没有再包一层）、`speechSynthesis`（配音）、MathML（数学排版，Chrome/Safari/Firefox 原生渲染，`<foreignObject>` 里已量过分数能正常上下堆叠 —— 所以接 KaTeX 只需要 `output: 'mathml'` 的字符串，不用注 CSS、不用搬 woff2）。
+
+自己造的只有三样，且都有理由：**op 日志 + 解释器**（没有任何库把"只增不删的指令带"当唯一真相，从而让分享、重放、重排都是副产品）；**时钟归旁白**（GSAP / Motion Canvas 这类 tween 库要夺走时间的所有权，而这里 `t` 必须是纯函数，倒带和分享才可能字节一致）；**二维板 + 摄影机**（Pixi/Konva 这类保留模式画布吃的是解析好的图元，接不住"模型边吐 markup 边长出来"的磁带头，也没有 shadow root 的作用域隔离）。
+
+结论：表达层没有重造轮子 —— 它就是 DOM；重造的是**时间的所有权**，那是这个产品区别于"一段渲染好的视频"的地方。
 
 ## 跑起来
 

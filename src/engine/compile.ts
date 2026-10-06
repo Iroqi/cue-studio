@@ -18,6 +18,13 @@ import type {
 
 export const VIEWPORT: Box = { x: 0, y: 0, w: 1600, h: 900 };
 
+/**
+ * How close a close-up may get, in world units of frame width. A painter's smallest text is 28 units
+ * tall, and at this frame width it is magnified about six times — still a word. Push in further and a
+ * label becomes a shape and a stroke becomes a wall, which is what made close-ups look blown up.
+ */
+const MIN_CLOSEUP_W = 260;
+
 export function unionBox(boxes: Box[]): Box {
   if (boxes.length === 0) return { ...VIEWPORT };
   const x1 = Math.min(...boxes.map((b) => b.x));
@@ -117,7 +124,7 @@ export function compile(entries: OpEntry[]): Compiled {
       // A close-up frames a part, not a bigger version of the whole: the point is given as a
       // fraction of the prop's own box because the director never knows where the artwork ends.
       const b = targets[0];
-      const side = Math.max(b.w, b.h) * Math.min(1, Math.max(0.05, op.span ?? 0.35));
+      const side = Math.max(MIN_CLOSEUP_W, Math.max(b.w, b.h) * Math.min(1, Math.max(0.05, op.span ?? 0.45)));
       rect = { x: b.x + b.w * frac(op.at.x) - side / 2, y: b.y + b.h * frac(op.at.y) - side / 2, w: side, h: side };
     } else if (op.mode === "focus" && targets.length === 1) rect = padded(targets[0], 1.5);
     if (op.mode === "pan" && op.dir) {
@@ -132,7 +139,7 @@ export function compile(entries: OpEntry[]): Compiled {
     }
     if (op.mode === "zoom" && op.zoom) {
       const c = centerOf(cursor);
-      const w = VIEWPORT.w / op.zoom;
+      const w = Math.max(MIN_CLOSEUP_W, VIEWPORT.w / op.zoom);
       rect = { x: c.x - w / 2, y: c.y - (w / (cursor.w / cursor.h)) / 2, w, h: w / (cursor.w / cursor.h) };
     }
     if (op.mode === "track" && op.follow) {

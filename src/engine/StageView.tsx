@@ -13,9 +13,24 @@ export function sanitize(markup: string): string {
     .replace(/javascript:/gi, "");
 }
 
-const PLACEHOLDER = `<div style="width:100%;height:100%;box-sizing:border-box;border:2px dashed rgba(180,140,255,.5);border-radius:8px"></div>`;
+/** Opaque and covering the whole artboard: that is the painter filling in the canvas we already have. */
+function isFullBleedRect(el: Element, svg: Element): boolean {
+  const num = (name: string) => parseFloat(el.getAttribute(name) ?? "");
+  // No fill attribute at all is SVG's default: black. That is the laziest way to paint a backdrop.
+  const fill = (el.getAttribute("fill") ?? "#000").trim().toLowerCase();
+  if (fill === "none" || /url\(/.test(fill)) return false;
+  if ((el.getAttribute("opacity") ?? "1") !== "1" || (el.getAttribute("fill-opacity") ?? "1") !== "1") return false;
+  if (el.getAttribute("stroke")) return false;
+  const vb = (svg.getAttribute("viewBox") ?? "").trim().split(/[\s,]+/).map(Number);
+  const [w, h] = vb.length === 4 ? [vb[2], vb[3]] : [parseFloat(svg.getAttribute("width") ?? ""), parseFloat(svg.getAttribute("height") ?? "")];
+  if (!(w > 0 && h > 0)) return false;
+  const x = num("x") || 0;
+  const y = num("y") || 0;
+  if (Math.abs(x) > w * 0.02 || Math.abs(y) > h * 0.02) return false;
+  return num("width") >= w * 0.9 && num("height") >= h * 0.9;
+}
 
-function PropView({ p, t }: { p: VisibleProp; t: number }) {
+function PropView({ p, t, pending }: { p: VisibleProp; t: number; pending: boolean }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const signature = `${p.svg}|${p.html}|${p.css}`;
 
@@ -24,13 +39,16 @@ function PropView({ p, t }: { p: VisibleProp; t: number }) {
     // A 3-D prop paints itself through Scene3D; the shadow-root path only draws flat markup.
     if (!el || p.scene3d) return;
     const root = el.shadowRoot ?? el.attachShadow({ mode: "open" });
-    const body = p.svg ?? p.html ?? PLACEHOLDER;
+    // An empty frame paints nothing: the outline below is the only mark it gets, and only while a
+    // paint is actually in flight for it.
     root.innerHTML =
       `<style>:host{display:block;width:100%;height:100%;overflow:visible}` +
       `svg{display:block;width:100%;height:100%}${sanitize(p.css ?? "")}</style>` +
-      sanitize(body);
+      sanitize(p.svg ?? p.html ?? "");
     const svg = root.querySelector("svg");
     if (svg && p.svg) {
+      const bg = svg.querySelector(":scope > rect[width][height]");
+      if (bg && isFullBleedRect(bg, svg)) bg.remove();
       svg.setAttribute("width", "100%");
       svg.setAttribute("height", "100%");
       if (!svg.getAttribute("viewBox")) svg.setAttribute("viewBox", `0 0 ${Math.round(p.box.w)} ${Math.round(p.box.h)}`);
@@ -41,7 +59,7 @@ function PropView({ p, t }: { p: VisibleProp; t: number }) {
   const style = { position: "absolute" as const, left: p.box.x, top: p.box.y, width: p.box.w, height: p.box.h };
 
   if (p.scene3d) {
-    const cls = ["prop", "prop3d", p.draft && "draft", p.highlight && `hl-${p.highlight}`].filter(Boolean).join(" ");
+    const cls = ["prop", "prop3d", p.highlight && `hl-${p.highlight}`].filter(Boolean).join(" ");
     return (
       <div className={cls} data-prop={p.id} style={style}>
         <Scene3D spec={p.scene3d} t={t} />
@@ -49,7 +67,7 @@ function PropView({ p, t }: { p: VisibleProp; t: number }) {
     );
   }
 
-  const cls = ["prop", p.draft && "draft", p.highlight && `hl-${p.highlight}`].filter(Boolean).join(" ");
+  const cls = ["prop", p.draft && pending && "draft", p.highlight && `hl-${p.highlight}`].filter(Boolean).join(" ");
   return <div ref={ref} className={cls} data-prop={p.id} style={style} />;
 }
 
@@ -99,7 +117,7 @@ export function StageView({ stage }: { stage: Stage }) {
     <div className="stage" data-track={s.track} ref={hostRef}>
       <div className="world" style={{ transform: `translate(${ox}px, ${oy}px) scale(${scale})` }}>
         {s.props.map((p) => (
-          <PropView key={p.id} p={p} t={s.t} />
+          <PropView key={p.id} p={p} t={s.t} pending={s.pendingArt > 0} />
         ))}
       </div>
       {s.veil && <div className={`veil veil-${s.veil.style}`} style={{ opacity: veilOpacity(s.veil.progress) }} />}
@@ -125,6 +143,7 @@ export function StageView({ stage }: { stage: Stage }) {
       <div className="telemetry">
         {s.props.length} props{three ? ` · ${three} 3D${drag ? "（可拖动·转动不进分享）" : ""}` : ""} · t={Math.round(s.t)}ms
         {s.track === "main" ? "" : ` · ${s.track}`}
+        {s.artWait ? " · 时钟等美工" : ""}
       </div>
     </div>
   );

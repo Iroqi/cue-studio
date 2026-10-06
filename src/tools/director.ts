@@ -184,7 +184,7 @@ export function directorTools(
     dir: o.dir ? (S(o.dir) as never) : undefined,
     screens: o.screens !== undefined ? N(o.screens, 0.8) : undefined,
     at: o.at ? { x: N((o.at as Record<string, unknown>).x, 0.5), y: N((o.at as Record<string, unknown>).y, 0.5) } : undefined,
-    span: o.span !== undefined ? N(o.span, 0.35) : undefined,
+    span: o.span !== undefined ? N(o.span, 0.45) : undefined,
     duration: N(o.duration, 900),
     easing: S(o.easing, "ease") as never,
   });
@@ -212,7 +212,7 @@ export function directorTools(
         }
         const narr = ops.filter((o) => o.kind === "narrate") as NarrateOp[];
         const secs = narr.reduce((a, o) => a + o.duration, 0) / 1000;
-        return { ops, result: `skeleton scheduled: ${narr.length} narrated beats, ~${secs.toFixed(0)}s of stage time. Props exist as placeholders — paint() each one to replace its art.` };
+        return { ops, result: `skeleton scheduled: ${narr.length} narrated beats, ~${secs.toFixed(0)}s of stage time. Each prop is an empty frame until paint() fills it — and the clock stops at a framed empty one while a paint is running.` };
       }
       case "build":
         ops.push({
@@ -326,7 +326,7 @@ export function directorTools(
     {
       name: "stage_script",
       description:
-        "Lay the skeleton first, in one call: beats of narration with prop placeholders (id, label, box) and camera moves. This makes the stage clock run immediately so you can keep directing while the artwork is still being drawn. Placeholders render as dashed frames until draw() replaces them. Call this at the start of every scene.",
+        "Lay the skeleton first, in one call: beats of narration with prop placeholders (id, label, box) and camera moves. The clock starts running, but it stands still while a paint() is in flight and the camera is looking at a frame that has no artwork yet — a caption can never finish before the thing it describes exists. So paint each placeholder before the narration reaches it: one nobody paints stays an empty frame. Call this at the start of every scene.",
       parameters: Type.Object({
         title: str("what this scene teaches"),
         beats: Type.Array(
@@ -356,7 +356,7 @@ export function directorTools(
                 dir: Type.Optional(Type.Enum({ left: "left", right: "right", up: "up", down: "down" }, { description: "for pan: slide the frame this way instead of naming coordinates" })),
                 screens: Type.Optional(num("for pan: fraction of the frame to slide, default 0.8")),
                 at: Type.Optional(Type.Object({ x: num("0..1 across the target's box"), y: num("0..1 down the target's box") }, { description: "close-up on a part of the target, e.g. an arrowhead" })),
-                span: Type.Optional(num("close-up coverage of the target's longest side, default 0.35")),
+                span: Type.Optional(num("close-up coverage of the target's longest side, default 0.45")),
                 duration: Type.Optional(num("move seconds")),
                 easing: Type.Optional(str("linear|ease|ease-in|ease-out|spring")),
               }),
@@ -394,7 +394,7 @@ export function directorTools(
         target: Type.Optional(Type.Array(str("prop or scene ids"))),
         region: Type.Optional(Type.Object(box, { description: "explicit rect to frame instead of ids" })),
         center: Type.Optional(Type.Object({ x: num("world x"), y: num("world y") }, { description: "for pan" })),
-        zoom: Type.Optional(num("for zoom: absolute scale, 1 = the 1600x900 default frame")),
+        zoom: Type.Optional(num("for zoom: absolute scale, 1 = the 1600x900 default frame; ~6x is as far in as text stays readable, so it stops there")),
         follow: Type.Optional(str("prop id to keep centred, for track")),
         dir: Type.Optional(Type.Enum({ left: "left", right: "right", up: "up", down: "down" }, { description: "for pan without coordinates: slide the frame this way" })),
         screens: Type.Optional(num("for pan+dir: how far to slide, in fractions of the current frame, default 0.8")),
@@ -404,7 +404,7 @@ export function directorTools(
             { description: "close-up on a PART of the target instead of the whole of it: the arrowhead is at x=1 for a rightward arrow, the joint where two vectors meet is their shared corner" },
           ),
         ),
-        span: Type.Optional(num("how much of the target's longest side the close-up covers, 0.05..1, default 0.35")),
+        span: Type.Optional(num("how much of the target's longest side the close-up covers, 0.05..1, default 0.45; the frame never closes in past 260 world units of width, so a tiny prop gets a margin instead of a blow-up")),
         duration: Type.Optional(num("ms, default 900")),
         easing: Type.Optional(str("linear|ease|ease-in|ease-out|spring")),
       }),

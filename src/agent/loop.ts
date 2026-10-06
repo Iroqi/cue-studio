@@ -401,36 +401,49 @@ export class Teacher {
       const box = this.stage.compiled.props.get(id)!.revisions.slice(-1)[0].box;
       this.ev.onStatus?.(`美工绘制 ${id} …`);
       let acc = "";
-      let res: TurnResult;
+      // If this call is what put the frame on the board, a failed paint takes it back off: an empty
+      // outline the learner can see is worse than the caption having nothing to point at.
+      const fail = (msg: string) => {
+        if (!existing) this.stage.append([{ kind: "discard", id }], track);
+        return { result: msg, isError: true };
+      };
+      this.stage.beginArt();
       try {
-        res = await this.ask(
-          "painter",
-          {
-            systemPrompt: PAINTER,
-            messages: [
-              {
-                role: "user",
-                content: `道具：${id}\n舞台位置：${Math.round(box.w)}x${Math.round(box.h)}，在场景 ${scene}\n编导的要求：${brief}`,
-                timestamp: Date.now(),
-              },
-            ],
-          },
-          {
-            onText: (d) => {
-              acc += d;
-              const svg = extractSvg(acc);
-              if (svg) this.stage.setPreview(id, { svg, box, scene, label: brief.slice(0, 60) });
+        let res: TurnResult;
+        try {
+          res = await this.ask(
+            "painter",
+            {
+              systemPrompt: PAINTER,
+              messages: [
+                {
+                  role: "user",
+                  content: `道具：${id}\n舞台位置：${Math.round(box.w)}x${Math.round(box.h)}，在场景 ${scene}\n编导的要求：${brief}`,
+                  timestamp: Date.now(),
+                },
+              ],
             },
-          },
-        );
-      } catch (e) {
-        return { result: `美工失败：${(e as Error).message}`, isError: true };
+            {
+              onText: (d) => {
+                acc += d;
+                const svg = extractSvg(acc);
+                if (svg) this.stage.setPreview(id, { svg, box, scene, label: brief.slice(0, 60) });
+              },
+            },
+          );
+        } catch (e) {
+          return fail(`美工失败：${(e as Error).message}`);
+        }
+        this.tally(res.message);
+        const svg = extractSvg(acc);
+        if (!svg) return fail(`美工没有产出可用的 svg（收到 ${acc.length} 字符）`);
+        this.stage.append([{ kind: "patch", id, svg }], track);
+      } finally {
+        // Every path out — finished, no artwork, throttled into giving up, learner hit 重来 — has to
+        // give the count back, or the clock waits on a paint that will never land.
+        this.stage.clearPreview(id);
+        this.stage.endArt();
       }
-      this.tally(res.message);
-      const svg = extractSvg(acc);
-      this.stage.clearPreview(id);
-      if (!svg) return { result: `美工没有产出可用的 svg（收到 ${acc.length} 字符）`, isError: true };
-      this.stage.append([{ kind: "patch", id, svg }], track);
       this.ev.onStatus?.(`画好 ${id}`);
       return { result: `painted ${id} (${Math.round(box.w)}x${Math.round(box.h)})` };
     }

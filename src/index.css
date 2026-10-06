@@ -278,8 +278,9 @@ button.x {
   box-shadow: 0 0 0 1px var(--hair), inset 0 0 44px rgba(0, 0, 0, 0.38);
 }
 
+/* the only thing an unfilled frame shows, and only while a paint is in flight for it */
 .prop.draft {
-  outline: 1px dashed #4a4270;
+  outline: 1px dashed var(--hair);
   outline-offset: 4px;
 }
 

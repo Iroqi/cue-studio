@@ -13,6 +13,7 @@ export interface VisibleProp {
   scene3d?: Scene3DSpec;
   label: string;
   note?: string;
+  /** Nothing has been drawn into this frame yet — an empty frame, not a half-finished picture. */
   draft: boolean;
   highlight?: string;
 }
@@ -31,6 +32,10 @@ export interface RenderState {
   finished: boolean;
   track: TrackId;
   live: boolean;
+  /** Paints in flight right now. */
+  pendingArt: number;
+  /** The clock is standing still because the picture under it isn't there yet. */
+  artWait: boolean;
 }
 
 const EASES: Record<string, (p: number) => number> = {
@@ -50,6 +55,15 @@ function lerpBox(a: Box, b: Box, p: number): Box {
   };
 }
 
+function overlaps(a: Box, b: Box): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+/** Anything a shadow root or a WebGL window can paint. A box with only a label and a css block is an empty frame. */
+function painted(r: { svg?: string; html?: string; scene3d?: Scene3DSpec }): boolean {
+  return !!(r.svg || r.html || r.scene3d);
+}
+
 export class Stage {
   readonly log = new OpLog();
   private compiledMain: Compiled = compile([]);
@@ -66,6 +80,10 @@ export class Stage {
   live = true;
   track: TrackId = MAIN_TRACK;
   asideResume: { track: TrackId; t: number } | null = null;
+  /** Paints the teacher has asked for and not yet got back. The clock waits on this count. */
+  pendingArt = 0;
+  private emptyFrame = false;
+  private artWait = false;
   private gateAnswer: string | null = null;
   private rect: Box = { x: 0, y: 0, w: 1600, h: 900 };
   private camFrom: Box | null = null;
@@ -135,6 +153,20 @@ export class Stage {
 
   clearPreview(id: string) {
     if (this.preview.delete(id)) this.emit();
+  }
+
+  /**
+   * A paint has been asked for. `beginArt` must be matched by `endArt` on every path — the loop runs
+   * it in a `finally` — because an unbalanced count is a clock that never starts again.
+   */
+  beginArt() {
+    this.pendingArt++;
+    this.emit();
+  }
+
+  endArt() {
+    this.pendingArt = Math.max(0, this.pendingArt - 1);
+    this.emit();
   }
 
   play() {
@@ -264,14 +296,23 @@ export class Stage {
     return this.compiled.gates.find((g) => !this.answered.has(g.seq)) ?? null;
   }
 
+  /** The caption must not finish before the thing it describes exists. */
+  private artBlocked(): boolean {
+    return this.live && this.pendingArt > 0 && this.emptyFrame;
+  }
+
   private tick(now: number) {
     const dt = (now - this.last) * this.speed;
     this.last = now;
     const dur = this.compiled.duration;
-    this.t = Math.min(this.t + dt, dur);
-    const gate = this.currentGate();
-    if (gate) this.hold();
-    else if (!this.live && this.t >= dur) this.hold();
+    // Standing still is not holding: `playing` stays on and the rAF keeps re-arming, so the frame
+    // after the artwork lands the clock picks up by itself.
+    if (!this.artBlocked()) {
+      this.t = Math.min(this.t + dt, dur);
+      const gate = this.currentGate();
+      if (gate) this.hold();
+      else if (!this.live && this.t >= dur) this.hold();
+    }
     this.emit();
     if (this.playing) this.raf = requestAnimationFrame(this.tick);
   }
@@ -310,6 +351,7 @@ export class Stage {
       const hl = highlights.find((h) => (h.op as { target: string }).target === p.id);
       const pv = this.preview.get(p.id);
       const mo = motions.filter((m) => (m.op as MotionOp).id === p.id).pop();
+      const art = pv ? { svg: pv.svg, html: pv.html, scene3d: rev.scene3d } : rev;
       out.push({
         id: p.id,
         scene: p.scene,
@@ -320,13 +362,22 @@ export class Stage {
         scene3d: rev.scene3d,
         label: pv?.label ?? rev.label,
         note: rev.note,
-        draft: pv ? true : rev.partial,
+        draft: !painted(art),
         highlight: hl ? (hl.op as { style: string }).style : undefined,
       });
     }
     for (const [id, pv] of this.preview) {
       if (this.compiled.props.has(id)) continue;
-      out.push({ id, scene: pv.scene, box: pv.box, svg: pv.svg, html: pv.html, css: pv.css, label: pv.label, draft: true });
+      out.push({
+        id,
+        scene: pv.scene,
+        box: pv.box,
+        svg: pv.svg,
+        html: pv.html,
+        css: pv.css,
+        label: pv.label,
+        draft: !(pv.svg || pv.html),
+      });
     }
     return out;
   }
@@ -334,6 +385,9 @@ export class Stage {
   private render(): RenderState {
     const t = this.t;
     this.rect = this.cameraAt(t);
+    const props = this.visibleProps(t);
+    this.emptyFrame = props.some((p) => p.draft && overlaps(p.box, this.rect));
+    this.artWait = this.playing && this.artBlocked();
     const narr = this.compiled.cues.filter((c) => c.op.kind === "narrate" && c.t <= t && c.end > t).pop();
     const veil = this.compiled.cues.filter((c) => c.op.kind === "transition" && c.t <= t && c.end > t).pop();
     return {
@@ -341,7 +395,7 @@ export class Stage {
       duration: this.compiled.duration,
       rect: this.rect,
       viewport: { w: 1600, h: 900 },
-      props: this.visibleProps(t),
+      props,
       narration: narr
         ? {
             text: (narr.op as { text: string }).text,
@@ -357,6 +411,8 @@ export class Stage {
       finished: !this.playing && t >= this.compiled.duration && this.compiled.duration > 0,
       track: this.track,
       live: this.live,
+      pendingArt: this.pendingArt,
+      artWait: this.artWait,
     };
   }
 
