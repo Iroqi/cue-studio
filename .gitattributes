@@ -1,0 +1,6 @@
+# 仓库内统一 LF：否则 Windows 上每次 git add 都会刷一屏 CRLF 警告，
+# 且跨平台 checkout 会出现整文件的换行 diff。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
