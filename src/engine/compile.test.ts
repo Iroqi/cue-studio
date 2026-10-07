@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compile } from "./compile";
+import { compile, VIEWPORT } from "./compile";
 import type { Box, BuildOp, CameraOp, HighlightOp, MotionOp, NarrateOp, Op, OpEntry, RecallOp, TransitionOp } from "./types";
 
 const tape = (...ops: Op[]): OpEntry[] => ops.map((op, i) => ({ seq: i, track: "main", turn: 0, op }));
@@ -125,5 +125,52 @@ describe("compile：here 落在这一拍说完时镜头看见的地方", () => {
     const show = compile(tape(unnamed("一"), unnamed("二")));
     const [a, b] = [...show.props.values()].map((p) => p.revisions[0].box);
     expect(a.x).not.toBe(b.x);
+  });
+});
+
+/** 一拍里连着要五格是骨架的正常写法：取模的让位会把第五格折回第一格。 */
+describe("compile：同一帧里连着多个 here，一个都不许正好压在另一个上", () => {
+  const laid = (n: number): Box[] =>
+    [...compile(tape(...Array.from({ length: n }, (_, i) => unnamed(`p${i}`)))).props.values()].map((p) => p.revisions[0].box);
+
+  it("六个落点六个位置（旧版第五、第六个折回第一、第二个）", () => {
+    const spots = new Set(laid(6).map((b) => `${Math.round(b.x)},${Math.round(b.y)}`));
+    expect(spots.size).toBe(6);
+  });
+
+  it("十二个也各不相同 —— 取模的坑不许换成另一个取模的坑", () => {
+    const spots = new Set(laid(12).map((b) => `${Math.round(b.x)},${Math.round(b.y)}`));
+    expect(spots.size).toBe(12);
+  });
+
+  it("落点永远在框里：让位不许让到画外去", () => {
+    for (const b of laid(12)) {
+      expect(b.x).toBeGreaterThanOrEqual(0);
+      expect(b.y).toBeGreaterThanOrEqual(0);
+      expect(b.x + b.w).toBeLessThanOrEqual(VIEWPORT.w);
+      expect(b.y + b.h).toBeLessThanOrEqual(VIEWPORT.h);
+    }
+  });
+
+  it("只有一格时它就是镜头正中那一个：别把唯一的东西摆到偏位上", () => {
+    const [only] = laid(1);
+    expect(only.x + only.w / 2).toBe(VIEWPORT.w / 2);
+    expect(only.y + only.h / 2).toBe(VIEWPORT.h / 2);
+  });
+
+  it("道具大到盖满整帧时不许飞出框外：没地方放就是没地方放，不装作有十六格", () => {
+    const big = Array.from({ length: 9 }, (_, i) => ({
+      kind: "build" as const,
+      id: `b${i}`,
+      box: { x: 0, y: 0, w: VIEWPORT.w, h: VIEWPORT.h },
+      label: `b${i}`,
+      here: true,
+    }));
+    for (const b of [...compile(tape(...big)).props.values()].map((p) => p.revisions[0].box)) {
+      expect(b.x).toBeGreaterThanOrEqual(0);
+      expect(b.y).toBeGreaterThanOrEqual(0);
+      expect(b.x + b.w).toBeLessThanOrEqual(VIEWPORT.w + 1);
+      expect(b.y + b.h).toBeLessThanOrEqual(VIEWPORT.h + 1);
+    }
   });
 });

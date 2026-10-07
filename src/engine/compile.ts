@@ -161,9 +161,17 @@ export function compile(entries: OpEntry[]): Compiled {
 
   /**
    * `here` is what happens when the director asks for an object but names no coordinates: it lands
-   * inside the frame the camera is on, tiled so a second one does not sit exactly on the first.
+   * inside the frame the camera is on, and a second one does not sit exactly on the first.
    * Placing things by world numbers is the part of an unbounded plane a model reliably gets wrong,
    * and a prop outside the frame is a lesson the learner never sees.
+   *
+   * The first slot is the centre of the frame — one object asked for one object, and the audience
+   * should not have to look off-axis at it. After that the slots spiral outward over the region the
+   * *centre* may occupy without the box leaving the frame (so a ring cannot push art out of shot),
+   * which is what a skeleton with more than four ideas in a beat needs: the old four-quadrant
+   * remainder folded the fifth prop back onto the first, and the learner saw one object and was
+   * remainder folded the fifth prop back onto the first, and the learner saw one object and was
+   * shown two. The rings hold 16 off-centre spots before the pattern repeats, each at its own angle.
    */
   const framed = (box: Box, here: boolean | undefined, view: Box): Box => {
     if (!here) return box;
@@ -172,13 +180,26 @@ export function compile(entries: OpEntry[]): Compiled {
       slotKey = key;
       slotN = 0;
     }
-    const i = slotN++ % 4;
-    return {
-      x: view.x + view.w * (i % 2 ? 0.66 : 0.34) - box.w / 2,
-      y: view.y + view.h * (i < 2 ? 0.36 : 0.64) - box.h / 2,
-      w: box.w,
-      h: box.h,
-    };
+    const i = slotN++;
+    // The rectangle a box's centre may occupy while the box stays inside the frame.
+    const rx = Math.max(view.w - box.w, 0) / 2;
+    const ry = Math.max(view.h - box.h, 0) / 2;
+    const cx = view.x + view.w / 2;
+    const cy = view.y + view.h / 2;
+    if (i === 0 || (rx === 0 && ry === 0)) {
+      // One slot, or a box as big as the frame: there is nowhere honest to put a second one, so it
+      // centres. Overlap here is geometry, not a bug in the layout.
+      return { x: cx - box.w / 2, y: cy - box.h / 2, w: box.w, h: box.h };
+    }
+    const ring = 1 + (i - 1) % 4;
+    const cycle = Math.floor((i - 1) / 4);
+    const per = 8; // eight positions per ring: the diagonal corners and the four edge midpoints, both ways
+    const step = (2 * Math.PI) / per;
+    // Start off-axis so the first ring slot never shares an x or a y with the centre; each overflow
+    // cycle rotates by half a step, which is not a multiple of the step until the pattern is exhausted.
+    const a = step * (((i - 1) % per) + 0.5) + cycle * (step / 2);
+    const f = ring / 4;
+    return { x: cx + Math.cos(a) * rx * f - box.w / 2, y: cy + Math.sin(a) * ry * f - box.h / 2, w: box.w, h: box.h };
   };
 
   /**
