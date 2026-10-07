@@ -321,7 +321,7 @@ export function StageView({ stage, bottomInset = 0 }: { stage: Stage; bottomInse
       {s.veil && <div className={`veil veil-${s.veil.style}`} style={{ opacity: veilOpacity(s.veil.progress) }} />}
       {s.narration && s.narration.style === "verse" && (
         <div className="narration verse">
-          {verseRows(s.narration.text, s.narration.progress).map((row, i) => (
+          {verseRows(s.narration.text, s.narration.reveal).map((row, i) => (
             <span key={i}>
               {row.said}
               <em className="unsaid">{row.unsaid}</em>
@@ -332,9 +332,9 @@ export function StageView({ stage, bottomInset = 0 }: { stage: Stage; bottomInse
       {s.narration && s.narration.style !== "verse" && s.narration.style !== "voice" && (
         <div className="narration">
           <span>
-            {s.narration.text.slice(0, Math.max(1, Math.round(s.narration.text.length * s.narration.progress)))}
+            {s.narration.text.slice(0, Math.max(1, Math.round(s.narration.text.length * s.narration.reveal)))}
             <i className="caret" />
-            <em className="unsaid">{s.narration.text.slice(Math.max(1, Math.round(s.narration.text.length * s.narration.progress)))}</em>
+            <em className="unsaid">{s.narration.text.slice(Math.max(1, Math.round(s.narration.text.length * s.narration.reveal)))}</em>
           </span>
         </div>
       )}

@@ -1,6 +1,7 @@
 import { compile, ownsTime } from "./compile";
 import { MAIN_TRACK, OpLog } from "./log";
 import { displaced, motionOffset } from "./motion";
+import { SETTLE_MS } from "./speech";
 import type { Box, Compiled, Cue, Gate, MotionOp, Op, OpEntry, Prop, Revision, Scene3DSpec, TrackId } from "./types";
 
 /** A cut the clock has already walked through the veil of. */
@@ -29,7 +30,7 @@ export interface RenderState {
   rect: Box;
   viewport: { w: number; h: number };
   props: VisibleProp[];
-  narration: { text: string; progress: number; duration: number; style: string } | null;
+  narration: { text: string; progress: number; reveal: number; duration: number; style: string } | null;
   veil: { style: string; progress: number } | null;
   gate: Gate | null;
   gateAnswer: string | null;
@@ -554,6 +555,9 @@ export class Stage {
         ? {
             text: (narr.op as { text: string }).text,
             progress: Math.min(1, (t - narr.t) / Math.max(narr.end - narr.t, 1)),
+            // The line is finished on screen `SETTLE_MS` before the beat ends: the last characters must
+            // not be appearing at the very instant the camera moves, or the settle buys nothing.
+            reveal: Math.min(1, (t - narr.t) / Math.max(narr.end - narr.t - SETTLE_MS, 1)),
             duration: Math.max(narr.end - narr.t, 1),
             style: (narr.op as { style?: string }).style ?? "caption",
           }

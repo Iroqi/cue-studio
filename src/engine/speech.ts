@@ -6,6 +6,12 @@ const LATIN_PER_SEC = 11;
 const CLAUSE_MS = 120;
 const STOP_MS = 250;
 
+/**
+ * The breath after a line: the voice has said it, the caption is finished, and the picture holds for
+ * this long before the next cut is allowed to move. Without it every cut lands on the last syllable.
+ */
+export const SETTLE_MS = 300;
+
 const SYLLABLE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]/;
 const LETTER = /[0-9A-Za-z\u00c0-\u024f]/;
 const CLAUSE = /[，、；：,;:]/g;

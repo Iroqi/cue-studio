@@ -1,5 +1,5 @@
 import type { Stage } from "./runtime";
-import { speechMs } from "./speech";
+import { speechMs, SETTLE_MS } from "./speech";
 
 const KEY = "canvas-teacher.voice";
 
@@ -68,10 +68,10 @@ export class Narrator {
       const u = new SpeechSynthesisUtterance(n.text);
       if (this.voice) u.voice = this.voice;
       u.lang = this.voice?.lang ?? "zh-CN";
-      const room = n.duration / 1000;
+      // The last `SETTLE_MS` of the beat is silence by contract, so the voice gets the window minus it.
+      // On a floored beat that lands the rate at exactly 1.0: the sentence ends, then the picture moves.
+      const room = Math.max(n.duration - SETTLE_MS, 0) / 1000;
       const needs = speechMs(n.text) / 1000;
-      // The clock floors every beat at this same estimate, so the ratio is at most 1: the voice only
-      // ever slows down to share a long beat, never rushes to finish before a cut.
       u.rate = Math.max(0.8, needs / Math.max(room, 0.4));
       speechSynthesis.speak(u);
       return;

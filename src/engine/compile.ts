@@ -16,7 +16,7 @@ import type {
   TransitionOp,
 } from "./types";
 import { inkBox } from "./ink";
-import { speechMs } from "./speech";
+import { speechMs, SETTLE_MS } from "./speech";
 
 export const VIEWPORT: Box = { x: 0, y: 0, w: 1600, h: 900 };
 
@@ -98,7 +98,7 @@ export function ownsTime(op: Op): op is TimeOwning {
  * the veil needs to cover the board — below that, the sweep of the old scene is an invisible jump cut.
  */
 export function cueMs(op: Op): number {
-  if (op.kind === "narrate") return Math.max(op.duration, speechMs(op.text));
+  if (op.kind === "narrate") return Math.max(op.duration, speechMs(op.text) + SETTLE_MS);
   if (op.kind === "transition") return Math.max(op.duration, 700);
   return Math.max("duration" in op ? op.duration : 0, 1);
 }
