@@ -4,7 +4,7 @@ import { Narrator } from "./engine/narrator";
 import { decodeTape, encodeTape } from "./engine/share";
 import { StageView } from "./engine/StageView";
 import { Teacher } from "./agent/loop";
-import { asideScore, continuationScore, rehearsalScore } from "./agent/rehearsal";
+import { asideScore, continuationScore, paintScript, rehearsalScore } from "./agent/rehearsal";
 import { ModelConfig } from "./ui/ModelConfig";
 import { BeatRail } from "./ui/BeatRail";
 import { LearnerArchive } from "./ui/LearnerArchive";
@@ -180,7 +180,7 @@ export default function App() {
     dropTeacher();
     if (cfg.scripted) {
       getModels(cfg);
-      setScriptedResponses(rehearsalScore());
+      setScriptedResponses(rehearsalScore(), paintScript());
     }
     stage.goLive();
     stage.play();
@@ -348,7 +348,7 @@ export default function App() {
           </div>
         )}
 
-        {snap.duration === 0 && speaking && (
+        {snap.duration === 0 && speaking && snap.gate == null && snap.askedGate == null && (
           <div className="preroll">
             <div className="preroll-lines">
               {topic

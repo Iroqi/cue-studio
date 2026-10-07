@@ -169,6 +169,8 @@ export interface DirectorResult {
   ops: Op[];
   /** Text returned to the model. */
   result: string;
+  /** stage_script only: placeholder frames that carry a painter's brief, in beat order. */
+  paintBriefs?: { id: string; brief: string; scene?: string }[];
   isError?: boolean;
 }
 
@@ -206,6 +208,7 @@ export function directorTools(
     const ops: Op[] = [];
     switch (name) {
       case "stage_script": {
+        const briefs: { id: string; brief: string; scene?: string }[] = [];
         for (const beat of A(args.beats)) {
           for (const p of A(beat.props)) {
             ops.push({
@@ -220,6 +223,7 @@ export function directorTools(
               box: B(p),
               here: HERE(p),
             });
+            if (p.brief) briefs.push({ id: S(p.id), brief: S(p.brief), scene: S(p.scene, S(beat.scene)) || undefined });
           }
           const cam = (beat.camera ?? {}) as Record<string, unknown>;
           if (cam.mode) ops.push(CAM(cam));
@@ -228,7 +232,16 @@ export function directorTools(
         }
         const narr = ops.filter((o) => o.kind === "narrate") as NarrateOp[];
         const secs = narr.reduce((a, o) => a + cueMs(o), 0) / 1000;
-        return { ops, result: `skeleton scheduled: ${narr.length} narrated beats, ~${secs.toFixed(0)}s of stage time. Each prop is an empty frame until paint() fills it — and the clock parks at the edge of the beat whose frame is still empty, so paint them in beat order.` };
+        return {
+          ops,
+          paintBriefs: briefs,
+          result:
+            `skeleton scheduled: ${narr.length} narrated beats, ~${secs.toFixed(0)}s of stage time. ` +
+            (briefs.length
+              ? `${briefs.length} briefed frame${briefs.length > 1 ? "s are already" : " is already"} with the painter in the background — the clock keeps walking and parks only at the edge of a beat whose picture has not landed. Do not paint() a briefed frame again; it only answers "正在后台绘制".`
+              : "Each prop is an empty frame until paint() fills it — and the clock parks at the edge of the beat whose frame is still empty, so paint them in beat order.") +
+            " A frame nobody ever paints or briefs is treated as abandoned: its caption plays over the blank.",
+        };
       }
       case "build":
         ops.push({
@@ -346,7 +359,7 @@ export function directorTools(
     {
       name: "stage_script",
       description:
-        "Lay the skeleton first, in one call: beats of narration with prop placeholders (id, label, box) and camera moves. The clock starts running, but it parks at the edge of a beat whose artwork has not landed — a picture still streaming in does not count as landed, so the line about it cannot start ahead of the thing it describes. Paint each placeholder before the narration reaches it; one nobody paints stays an empty frame until your turn ends and the caption plays over it. Call this at the start of every scene.",
+        "Lay the skeleton first, in one call: beats of narration with prop placeholders (id, label, box, and a painter's brief) and camera moves. The clock starts running, but it parks at the edge of a beat whose artwork has not landed — a picture still streaming in does not count as landed, so the line about it cannot start ahead of the thing it describes. A placeholder with a brief is delegated to the painter the instant the skeleton lands; one without waits for your paint(). By the time the narration reaches a beat, its briefed art should have arrived — brief everything the first lines point at. Call this at the start of every scene, but never as the first move of a new topic: the pre-test question comes first, so the skeleton is staged with the learner's answer in hand.",
       parameters: Type.Object({
         title: str("what this scene teaches"),
         beats: Type.Array(
@@ -363,6 +376,7 @@ export function directorTools(
                 Type.Object({
                   id: str("stable id, reused across scenes for prop continuity"),
                   label: str("one line: what this object IS"),
+                  brief: Type.Optional(str("for the painter: what the drawing IS and what relation it must make visible. A briefed placeholder is delegated to the painter the moment the skeleton lands — no separate paint() call; leave it out only for a frame you will draw yourself")),
                   scene: Type.Optional(str("scene to place it in")),
                   ...boxPlaced,
                   note: Type.Optional(str("teaching role of this prop")),

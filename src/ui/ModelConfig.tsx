@@ -111,10 +111,12 @@ export function ModelConfig({ cfg, onChange, onEvent }: Props) {
 
   return (
     <div className="panel config">
-      <label className="switch">
-        <input type="checkbox" checked={cfg.scripted} onChange={(e) => onChange({ ...cfg, scripted: e.target.checked })} />
-        <span>本地排练模式（不联网，用固定谱子驱动同一套舞台）</span>
-      </label>
+      {import.meta.env.DEV && (
+        <label className="switch">
+          <input type="checkbox" checked={cfg.scripted} onChange={(e) => onChange({ ...cfg, scripted: e.target.checked })} />
+          <span>本地排练模式（不联网，用固定谱子驱动同一套舞台）</span>
+        </label>
+      )}
 
       {!cfg.scripted && (
         <>

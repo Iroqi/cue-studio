@@ -1,4 +1,4 @@
-import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
 
 /**
  * What a reasoning model does when the output ceiling is lower than its train of thought: it stops
@@ -84,14 +84,40 @@ export function continuationScore() {
   ];
 }
 
+/** Scripted artwork per prop, keyed by the id in the painter's brief — the pipeline picks by it. */
+export function paintScript(): Record<string, AssistantMessage[]> {
+  return {
+    "vec-a": [fauxAssistantMessage(ART_A, { stopReason: "stop" })],
+    "vec-b": [fauxAssistantMessage(ART_B, { stopReason: "stop" })],
+    "vec-r": [fauxAssistantMessage(ART_R, { stopReason: "stop" })],
+    "comp-x": [fauxAssistantMessage(ART_X, { stopReason: "stop" })],
+    "comp-y": [fauxAssistantMessage(ART_Y, { stopReason: "stop" })],
+  };
+}
+
 export function rehearsalScore() {
   return [
     // 0 — a cut-off turn that leaves nothing on stage; the loop must retry it, not close the section.
     truncatedThinkingOnly(),
-    // 1 — director lays the skeleton: the clock starts before any artwork exists.
+    // 0b — the cold start is a pre-test, not a preroll: one question lands before any skeleton,
+    // and the answer is what the first beat is staged around.
     fauxAssistantMessage(
       [
-        fauxText("先把这一场的骨架排出来：两条向量、一句开场旁白，镜头先框住整个场面。骨架先落地，时钟就跑起来，画面随后填进去。"),
+        fauxText("先探一下他带着什么上台 —— 这一题问完才知道第一拍该从哪里起。"),
+        fauxToolCall("ask_learner", {
+          prompt: "两个人各拉一根绳子上的力，一个向东 3N、一个向北 4N。合力的大小是多少？",
+          options: ["7N，两个力直接相加", "5N，两条直角边合成斜边", "1N，方向相反的力会互相抵消"],
+          answer: 1,
+          why: "力是向量：相加看的是终点，不是把数字叠起来。",
+          concept: "相加只看终点",
+        }),
+      ],
+      { stopReason: "toolUse" },
+    ),
+    // 1 — director lays the skeleton, briefs and all: the painters are ordered at skeleton time.
+    fauxAssistantMessage(
+      [
+        fauxText("先把这一场的骨架排出来：两条向量、一句开场旁白，镜头先框住整个场面。骨架先落地，时钟就跑起来，画面在后台长出来。"),
         fauxToolCall("stage_script", {
           title: "向量加法：三角形法则",
           beats: [
@@ -99,7 +125,7 @@ export function rehearsalScore() {
               scene: "合成",
               say: "这是一条向量 a。它有长度，也有方向 —— 两样都算它的一部分。",
               seconds: 7,
-              props: [{ id: "vec-a", label: "向量 a", scene: "合成", x: 150, y: 520, w: 520, h: 310, note: "第一条向量，学生已经认识" }],
+              props: [{ id: "vec-a", label: "向量 a", scene: "合成", x: 150, y: 520, w: 520, h: 310, note: "第一条向量，学生已经认识", brief: "一条向右上方的向量 a，起点在左下，标注 a" }],
               camera: { mode: "fit", target: ["vec-a"], duration: 1200 },
             },
             {
@@ -108,20 +134,15 @@ export function rehearsalScore() {
               seconds: 8,
               style: "verse",
               hold: 700,
-              props: [{ id: "vec-b", label: "向量 b", scene: "合成", x: 600, y: 250, w: 520, h: 330 }],
+              props: [{ id: "vec-b", label: "向量 b", scene: "合成", x: 600, y: 250, w: 520, h: 330, brief: "一条向右上方的向量 b，比 a 短陡，标注 b" }],
               camera: { mode: "fit", target: ["vec-a", "vec-b"], duration: 900 },
             },
           ],
         }),
-        fauxToolCall("paint", { id: "vec-a", brief: "一条向右上方的向量 a，起点在左下，标注 a", scene: "合成" }),
-        fauxToolCall("paint", { id: "vec-b", brief: "一条向右上方的向量 b，比 a 短陡，标注 b", scene: "合成" }),
       ],
       { stopReason: "toolUse" },
     ),
-    // 2/3 — painter fills the placeholders.
-    fauxAssistantMessage(ART_A, { stopReason: "stop" }),
-    fauxAssistantMessage(ART_B, { stopReason: "stop" }),
-    // 4 — director asks for the resultant and moves in.
+    // 2 — director asks for the resultant and moves in; the paint runs in the pipeline, not here.
     fauxAssistantMessage(
       [
         fauxText("两条已经站住了，现在合它们。"),
@@ -130,8 +151,7 @@ export function rehearsalScore() {
       ],
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage(ART_R, { stopReason: "stop" }),
-    // 5 — highlight the闭合关系, then hand off the narration
+    // 3 — highlight the闭合关系, then hand off the narration
     fauxAssistantMessage(
       [
         fauxToolCall("highlight", { target: "vec-r", style: "pulse", seconds: 2.4 }),
@@ -142,7 +162,7 @@ export function rehearsalScore() {
       ],
       { stopReason: "toolUse" },
     ),
-    // 6 — change of scene carrying the SAME prop across it
+    // 4 — change of scene carrying the SAME prop across it
     fauxAssistantMessage(
       [
         fauxText("换场。合成这一场的结论要作为道具带进分解那一幕，而不是重画一条很像的。"),
@@ -152,7 +172,7 @@ export function rehearsalScore() {
       ],
       { stopReason: "toolUse" },
     ),
-    // 7 — components
+    // 5 — components, ordered from the pipeline
     fauxAssistantMessage(
       [
         fauxToolCall("paint", { id: "comp-x", brief: "一条水平向量，从合成向量的起点向右延伸到它的终点正下方，颜色灰一些，标注 rₓ", scene: "分解", x: 2560, y: 700, w: 960, h: 180 }),
@@ -160,9 +180,7 @@ export function rehearsalScore() {
       ],
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage(ART_X, { stopReason: "stop" }),
-    fauxAssistantMessage(ART_Y, { stopReason: "stop" }),
-    // 8 — the genuinely hard part, asked of the learner
+    // 6 — the genuinely hard part, asked of the learner
     fauxAssistantMessage(
       [
         fauxToolCall("camera", { mode: "fit", target: ["vec-r", "comp-x", "comp-y"], duration: 1400 }),
@@ -178,7 +196,7 @@ export function rehearsalScore() {
       ],
       { stopReason: "toolUse" },
     ),
-    // 9 — close, and record what was actually understood
+    // 7 — close, and record what was actually understood
     fauxAssistantMessage(
       [
         fauxToolCall("highlight", { target: "vec-r", style: "outline", seconds: 2 }),

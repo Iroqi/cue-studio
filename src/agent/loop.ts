@@ -1,7 +1,8 @@
 import { Type, validateToolCall, type AssistantMessage, type Context, type Message, type SystemMessage, type TextContent, type Tool, type ToolCall } from "@earendil-works/pi-ai";
+import { MAIN_TRACK } from "../engine/log";
 import type { Stage } from "../engine/runtime";
-import type { Op } from "../engine/types";
-import { directorTools, type TeachingState } from "../tools/director";
+import type { Box, Op } from "../engine/types";
+import { directorTools, type DirectorResult, type TeachingState } from "../tools/director";
 import { GRAMMAR, PAINTER, stateSections } from "./prompt";
 import { missesOn, record as archiveAttempt, summary as learnerHistory } from "./archive";
 import { streamTurn, type LlmConfig, type Role, type TurnEvents, type TurnResult } from "../llm/llm";
@@ -9,7 +10,7 @@ import { streamTurn, type LlmConfig, type Role, type TurnEvents, type TurnResult
 const PAINT_TOOL: Tool = {
   name: "paint",
   description:
-    "Delegate one prop's artwork to the stage painter (a separate, faster model). Give it a brief: what the object is, what relation it must make visible, and what the learner should notice. The drawing streams onto the stage as it is generated.",
+    "Delegate one prop's artwork to the stage painter (a separate, faster model) and return at once — the drawing lands on its frame in the background while the clock keeps performing. Give it a brief: what the object is, what relation it must make visible, and what the learner should notice. The clock parks at the edge of a beat whose frame is still empty, so a beat about to be narrated has to be launched early: put the brief in stage_script instead, which dispatches these for you at skeleton time.",
   parameters: Type.Object({
     id: Type.String({ description: "prop id already placed by stage_script, or a new one" }),
     brief: Type.String({ description: "what to draw and why — the idea, not the coordinates" }),
@@ -34,6 +35,17 @@ const TRUNCATED_MAX = 2;
 /** Anything the stage can act on: a verb to run, or a line to put on the clock. */
 function hasStageable(m: AssistantMessage): boolean {
   return m.content.some((c) => c.type === "toolCall" || (c.type === "text" && c.text.trim().length > 0));
+}
+
+/** A paint running in the background: how to stop it, and where its frame sits on the tape. */
+interface InPaint {
+  cancel: () => void;
+  /** The seq of the op that put this paint's frame on the tape — a reroll cuts dispatches by it. */
+  frameSeq: number;
+  /** True if the dispatch itself laid the frame: only such a frame comes back off when the take is cut. */
+  built: boolean;
+  /** Whether the paint got hold of a pipeline slot (a queued cancel must not disturb the board). */
+  slot: boolean;
 }
 
 function extractSvg(acc: string): string | undefined {
@@ -63,13 +75,20 @@ export class Teacher {
   busy = false;
   /** The seq of the question the main turn is parked on, waiting for a real answer. */
   private parkedGate: number | null = null;
+  /** Paints running (or queued) in the background, by prop id. */
+  private paints = new Map<string, InPaint>();
+  /** Background paints outlive their turn, so the turn's abort controller cannot speak for them. */
+  private paintAbort = new AbortController();
+  /** A free tier counts tokens per minute across both roles: the pipeline dispatches at once but runs a few at a time. */
+  private paintBusy = 0;
+  private paintWaiters: (() => void)[] = [];
   private usage = { input: 0, output: 0, cost: 0, calls: 0 };
   private abort = new AbortController();
   private idleWaiters: (() => void)[] = [];
   /** What the director's head held just before each turn — the only way back into a re-take. */
   private turnSnap = new Map<number, { messages: Message[]; teaching: TeachingState }>();
   private tools: Tool[];
-  private runVerb: (name: string, args: Record<string, unknown>) => { ops: Op[]; result: string; isError?: boolean };
+  private runVerb: (name: string, args: Record<string, unknown>) => DirectorResult;
 
   private stage: Stage;
   private cfg: LlmConfig;
@@ -90,6 +109,19 @@ export class Teacher {
 
   stop() {
     this.abort.abort();
+    this.cancelPaints();
+  }
+
+  /**
+   * Take every background paint off the clock. The frames stay empty — which the abandoned-turn rule
+   * already reads as nothing owed — so the show never parks on art whose director walked away.
+   */
+  private cancelPaints() {
+    this.paintAbort.abort();
+    this.paintAbort = new AbortController();
+    for (const [, p] of this.paints) p.cancel();
+    this.paints.clear();
+    for (const wake of this.paintWaiters.splice(0)) wake();
   }
 
   /** System sections, with this learner's proven misses attached when there are any. */
@@ -222,16 +254,16 @@ export class Teacher {
    * tokens-per-minute budget, so a painter that fails on the first 429 hands the director an error he
    * can only answer by asking for the same artwork again — burning the window a second time.
    */
-  private async ask(role: Role, context: Context, events: TurnEvents): Promise<TurnResult> {
+  private async ask(role: Role, context: Context, events: TurnEvents, signal?: AbortSignal): Promise<TurnResult> {
     for (let retry = 0; ; retry++) {
       try {
-        return await streamTurn(this.cfg, role, context, events, this.abort.signal);
+        return await streamTurn(this.cfg, role, context, events, signal ?? this.abort.signal);
       } catch (e) {
         if (this.abort.signal.aborted) throw e;
         if (!RATE_LIMIT.test((e as Error).message) || retry >= RETRIES) throw e;
         const hold = WAIT_MS * (retry + 1);
         this.ev.onStatus?.(`${role === "painter" ? "美工" : "导演"}被服务商限流，等 ${Math.round(hold / 1000)} 秒后自己重试（第 ${retry + 1}/${RETRIES} 次）…`);
-        await this.sleep(hold);
+        await this.sleep(hold, signal);
       }
     }
   }
@@ -314,25 +346,12 @@ export class Teacher {
             timestamp: Date.now(),
           } as Message);
         };
-        for (let i = 0; i < calls.length; i++) {
+        for (const call of calls) {
           if (this.abort.signal.aborted) return;
-          // A run of paints is a run of independent delegations: one brief in, one drawing out, no
-          // ordering between them, and each fills the frame its beat already reserved — so they go out
-          // together and the clock stops waiting for them together. Anything else keeps its place in
-          // line: it either moves the clock or reads what a paint just made.
-          if (calls[i].name !== PAINT_TOOL.name) {
-            await report(calls[i]);
-            continue;
-          }
-          let end = i;
-          while (end < calls.length && calls[end].name === PAINT_TOOL.name) end++;
-          for (let at = i; at < end; at += PAINT_CONCURRENCY) {
-            const settled = await Promise.allSettled(calls.slice(at, Math.min(at + PAINT_CONCURRENCY, end)).map(report));
-            // One painter failing must not swallow its siblings' results; the error still surfaces, after.
-            const failed = settled.find((r) => r.status === "rejected");
-            if (failed && failed.status === "rejected") throw failed.reason;
-          }
-          i = end - 1;
+          // Every verb keeps its place in line — a paint included, but a paint only queues its
+          // drawing: the call returns the moment the frame is on the tape, so the pipeline's
+          // concurrency is the painter's own cap, not this loop waiting on it.
+          await report(call);
         }
       }
       this.ev.onStatus?.("这一节先到这里（一拍讲不了更多）—— 接着说就往下演。");
@@ -386,7 +405,15 @@ export class Teacher {
     for (const t of [...this.turnSnap.keys()]) if (t >= entry.turn) this.turnSnap.delete(t);
     Object.assign(this.teaching, snap.teaching);
     this.messages.splice(0, this.messages.length, ...snap.messages);
-    const at = this.stage.rerollFrom(seq);
+    // A background paint outlives the turn that dispatched it, so cutting the tape has to cut its
+    // hand too — and a frame its dispatch laid on the cut passage goes back off with it. A frame
+    // older than the cut survives the reroll, and its delivery survives with it: the re-take is
+    // staged around a picture that is already on its way.
+    const doomed = [...this.paints.entries()].filter(([, p]) => p.frameSeq >= seq);
+    this.cancelPaints();
+    this.stage.rerollFrom(seq);
+    for (const [id] of doomed) if (this.stage.compiled.props.has(id)) this.stage.append([{ kind: "discard", id }], MAIN_TRACK);
+    const at = this.stage.compiled.duration;
     this.messages.push({
       role: "user",
       content:
@@ -396,6 +423,160 @@ export class Teacher {
     });
     this.ev.onStatus?.(`重排第 ${entry.turn} 拍…`);
     await this.spin("main");
+  }
+
+  /** One paint call from the director: put the frame on the tape, hand the brief to the pipeline, return at once. */
+  private async runPaint(args: Record<string, unknown>, track: string): Promise<{ result: string; isError?: boolean }> {
+    const id = String(args.id);
+    const brief = String(args.brief ?? "");
+    if (this.paints.has(id)) return { result: `${id} 的画面正在后台绘制，空框已占住那一格，不必再派`, isError: true };
+    const scene = typeof args.scene === "string" && args.scene ? args.scene : undefined;
+    return this.dispatchPaint(id, brief, { scene, x: args.x, y: args.y, w: args.w, h: args.h }, track);
+  }
+
+  /**
+   * Launch a paint: the frame lands on the tape now, the drawing lands in the background whenever
+   * the pipeline gets to it. The receipt is an appointment, not a delivery — the clock keeps
+   * performing and parks at the edge of the beat whose frame is still empty, so the show reads the
+   * pipeline's pace instead of the turn's.
+   */
+  private async dispatchPaint(
+    id: string,
+    brief: string,
+    at: { scene?: string; x?: unknown; y?: unknown; w?: unknown; h?: unknown },
+    track: string,
+  ): Promise<{ result: string; isError?: boolean }> {
+    // An established prop keeps its board; a new one with no board named goes where the director says,
+    // and if the director didn't say, onto the board the show is standing on (compile decides).
+    const scene = at.scene ?? this.stage.compiled.props.get(id)?.scene ?? undefined;
+    const rev = this.stage.compiled.props.get(id)?.revisions.slice(-1)[0];
+    // Only a prop with no frame on the tape gets one laid here. The skeleton's build is already the
+    // frame a brief points at — re-laying it would double-book the outline on the tape — and a frame
+    // carrying a picture keeps it while the redraw runs, because the board must not go blank just
+    // because the director asked for a better drawing.
+    const laysFrame = !rev;
+    let frameSeq = this.stage.log.lastSeq;
+    if (laysFrame) {
+      // A frame with no coordinates is a request for something the audience can see, not at
+      // the origin of an infinite plane.
+      const here = !rev && at.x === undefined && at.y === undefined;
+      const added = this.stage.append(
+        [
+          {
+            kind: "build",
+            id,
+            scene,
+            label: (brief || id).slice(0, 60),
+            here: here || undefined,
+            box: { x: Number(at.x ?? 0), y: Number(at.y ?? 0), w: Number(at.w ?? 400), h: Number(at.h ?? 300) },
+          },
+        ],
+        track,
+      );
+      frameSeq = added[added.length - 1].seq;
+    }
+    const framedBox = this.stage.compiled.props.get(id)!.revisions.slice(-1)[0].box;
+    const ctrl = new AbortController();
+    const watch = () => ctrl.abort();
+    this.paintAbort.signal.addEventListener("abort", watch, { once: true });
+    const job: InPaint = { cancel: () => { this.paintAbort.signal.removeEventListener("abort", watch); ctrl.abort(); }, frameSeq, built: laysFrame, slot: false };
+    this.paints.set(id, job);
+    this.stage.beginPaint(id);
+    void this.paintBackground(id, brief, framedBox, scene, track, job, ctrl);
+    return { result: `已把 ${id} 交给美工后台绘制（画框 ${Math.round(framedBox.w)}x${Math.round(framedBox.h)} 已上台）；时钟不会等这一笔` };
+  }
+
+  /** Wait for a free slot in the painter pipeline — dispatch is at once, concurrency is capped. */
+  private takePaintSlot(job: InPaint, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.resolve();
+    if (this.paintBusy < PAINT_CONCURRENCY) {
+      this.paintBusy++;
+      job.slot = true;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      const wake = () => {
+        signal.removeEventListener("abort", wake);
+        const i = this.paintWaiters.indexOf(wake);
+        if (i >= 0) {
+          // Woken by a freed slot, not by cancellation: this waiter is next in line, take its ticket.
+          this.paintWaiters.splice(i, 1);
+          job.slot = true;
+        }
+        resolve();
+      };
+      this.paintWaiters.push(wake);
+      signal.addEventListener("abort", wake, { once: true });
+    });
+  }
+
+  private freePaintSlot() {
+    const next = this.paintWaiters.shift();
+    if (next) next();
+    else this.paintBusy--;
+  }
+
+  /**
+   * The painter's turn, out of the director's way. Every path out has to settle the stage's books
+   * (`endPaint`) and its own (`freePaintSlot`), and a failure takes its frame off the board: an
+   * empty outline the learner can see is worse than the caption having nothing to point at — unless
+   * the skeleton laid that frame on purpose, in which case it stays and the clock simply moves on.
+   */
+  private async paintBackground(id: string, brief: string, box: Box, scene: string | undefined, track: string, job: InPaint, ctrl: AbortController) {
+    const signal = this.paintAbort.signal.aborted ? this.paintAbort.signal : ctrl.signal;
+    try {
+      await this.takePaintSlot(job, signal);
+      if (signal.aborted) {
+        if (job.built && job.slot) this.stage.append([{ kind: "discard", id }], track);
+        return;
+      }
+      this.ev.onStatus?.(`美工绘制 ${id} …`);
+      let acc = "";
+      let res: TurnResult;
+      try {
+        res = await this.ask(
+          "painter",
+          {
+            systemPrompt: PAINTER,
+            messages: [
+              {
+                role: "user",
+                content: `道具：${id}\n舞台位置：${Math.round(box.w)}x${Math.round(box.h)}，在场景 ${scene ?? "当前这块板"}\n编导的要求：${brief}`,
+                timestamp: Date.now(),
+              },
+            ],
+          },
+          {
+            onText: (d) => {
+              acc += d;
+              const svg = extractSvg(acc);
+              if (svg) this.stage.setPreview(id, { svg, box, scene, label: brief.slice(0, 60) || id });
+            },
+          },
+          ctrl.signal,
+        );
+      } catch (e) {
+        if (!this.paints.has(id)) return; // cancelled: the reroll already dealt with the frame
+        if (job.built) this.stage.append([{ kind: "discard", id }], track);
+        this.ev.onStatus?.(`美工失败 ${id}：${(e as Error).message}`);
+        return;
+      }
+      this.tally(res.message);
+      if (!this.paints.has(id)) return; // cancelled mid-flight: deliver nothing into a cut passage
+      const svg = extractSvg(acc);
+      if (!svg) {
+        if (job.built) this.stage.append([{ kind: "discard", id }], track);
+        this.ev.onStatus?.(`美工没有产出可用的 svg（${id}，收到 ${acc.length} 字符）`);
+        return;
+      }
+      this.stage.append([{ kind: "patch", id, svg }], track);
+      this.ev.onStatus?.(`画好 ${id}`);
+    } finally {
+      this.stage.clearPreview(id);
+      this.stage.endPaint(id);
+      this.paints.delete(id);
+      this.freePaintSlot();
+    }
   }
 
   /** Partial arguments while still streaming: the tape head, not the tape. */
@@ -427,85 +608,21 @@ export class Teacher {
       return { result: `参数不合法：${(e as Error).message}。请重新给出 ${call.name}。`, isError: true };
     }
 
-    if (call.name === "paint") {
-      const id = String(args.id);
-      const brief = String(args.brief ?? "");
-      // An established prop keeps its board; a new one with no board named goes where the director says,
-      // and if the director didn't say, onto the board the show is standing on (compile decides).
-      const scene = this.stage.compiled.props.get(id)?.scene ?? (typeof args.scene === "string" && args.scene ? args.scene : undefined);
-      const existing = this.stage.compiled.props.get(id);
-      if (!existing) {
-        // A brief with no coordinates is a request to draw something the audience can see, not at
-        // the origin of an infinite plane.
-        const here = args.x === undefined && args.y === undefined;
-        this.stage.append(
-          [
-            {
-              kind: "build",
-              id,
-              scene,
-              label: brief.slice(0, 60),
-              here: here || undefined,
-              box: { x: Number(args.x ?? 0), y: Number(args.y ?? 0), w: Number(args.w ?? 400), h: Number(args.h ?? 300) },
-            },
-          ],
-          track,
-        );
-      }
-      const box = this.stage.compiled.props.get(id)!.revisions.slice(-1)[0].box;
-      this.ev.onStatus?.(`美工绘制 ${id} …`);
-      let acc = "";
-      // If this call is what put the frame on the board, a failed paint takes it back off: an empty
-      // outline the learner can see is worse than the caption having nothing to point at.
-      const fail = (msg: string) => {
-        if (!existing) this.stage.append([{ kind: "discard", id }], track);
-        return { result: msg, isError: true };
-      };
-      this.stage.beginArt(id);
-      try {
-        let res: TurnResult;
-        try {
-          res = await this.ask(
-            "painter",
-            {
-              systemPrompt: PAINTER,
-              messages: [
-                {
-                  role: "user",
-                  content: `道具：${id}\n舞台位置：${Math.round(box.w)}x${Math.round(box.h)}，在场景 ${scene ?? "当前这块板"}\n编导的要求：${brief}`,
-                  timestamp: Date.now(),
-                },
-              ],
-            },
-            {
-              onText: (d) => {
-                acc += d;
-                const svg = extractSvg(acc);
-                if (svg) this.stage.setPreview(id, { svg, box, scene, label: brief.slice(0, 60) });
-              },
-            },
-          );
-        } catch (e) {
-          return fail(`美工失败：${(e as Error).message}`);
-        }
-        this.tally(res.message);
-        const svg = extractSvg(acc);
-        if (!svg) return fail(`美工没有产出可用的 svg（收到 ${acc.length} 字符）`);
-        this.stage.append([{ kind: "patch", id, svg }], track);
-      } finally {
-        // Every path out — finished, no artwork, throttled into giving up, learner hit 重来 — has to
-        // take the id off the in-flight set, or the clock waits on a paint that will never land.
-        this.stage.clearPreview(id);
-        this.stage.endArt(id);
-      }
-      this.ev.onStatus?.(`画好 ${id}`);
-      return { result: `painted ${id} (${Math.round(box.w)}x${Math.round(box.h)})` };
-    }
+    if (call.name === "paint") return this.runPaint(args, track);
 
     const out = this.runVerb(call.name, args);
     if (out.ops.length) this.stage.append(out.ops, track);
     for (const op of out.ops) {
       if (op.kind === "build" || op.kind === "patch") this.stage.clearPreview(op.id);
+    }
+    // A skeleton that named its art is an order to the painter, not just to the clock: the brief
+    // dispatches from the frame it belongs to, so the pipeline starts at skeleton time and the
+    // director never spends a beat standing between a placeholder and its picture.
+    if (call.name === "stage_script" && out.paintBriefs?.length) {
+      for (const b of out.paintBriefs) {
+        if (this.paints.has(b.id)) continue;
+        await this.dispatchPaint(b.id, b.brief, { scene: b.scene }, track);
+      }
     }
     if (out.result.startsWith("question queued") || out.result.startsWith("stage clock will stop")) {
       const gates = this.stage.openGateSeqs();
@@ -513,14 +630,14 @@ export class Teacher {
       this.stage.play();
       this.ev.onStatus?.("等学习者回答…");
       this.parkedGate = seq;
-      // The clock may be parked on a picture this turn still owes. A parked director cannot pay that
-      // debt — it is waiting on the learner — so the debt would hold the clock short of the very
-      // question it is waiting for, and the show would freeze with the turn frozen inside it. Closing
-      // the turn calls the debt in, which lets the clock reach the gate; re-opening it afterwards
-      // keeps the rest of the turn under the same rule.
-      this.stage.setTurnOpen(false);
+      // The clock may be parked on pictures the pipeline still owes — this turn's skeletons and
+      // background paints alike. A parked director cannot pay that debt; it is waiting on the
+      // learner — so the debt would hold the clock short of the very question it is waiting for, and
+      // the show would freeze with the turn frozen inside it. Calling the debt in lets the clock
+      // reach the card; re-billing it afterwards keeps the rest of the passage under the same rule.
+      this.stage.setDebtSuspended(true);
       const answer = await this.waitForAnswer(seq);
-      this.stage.setTurnOpen(true);
+      this.stage.setDebtSuspended(false);
       this.parkedGate = null;
       if (answer === null) return { result: "（这一拍撤了下来，学习者没有作答）", isError: true };
       return { result: this.settleGate(seq, answer) };
@@ -603,11 +720,12 @@ export class Teacher {
     return Promise.race([this.stage.waitForGate(seq), aborted]);
   }
 
-  /** A wait that 重来 can cut through immediately. */
-  private sleep(ms: number): Promise<void> {
+  /** A wait that 重来 — or the cancelling of one background paint — can cut through immediately. */
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    const cut = signal ?? this.abort.signal;
     return new Promise((r) => {
       const t = setTimeout(r, ms);
-      this.abort.signal.addEventListener(
+      cut.addEventListener(
         "abort",
         () => {
           clearTimeout(t);

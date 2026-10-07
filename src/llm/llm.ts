@@ -46,7 +46,10 @@ export const DEFAULT_CONFIG: LlmConfig = {
   director: { provider: "", model: "" },
   painter: { provider: "", model: "" },
   thinking: "medium",
-  scripted: true,
+  // The product speaks with a real model. Rehearsal (faux) is a dev harness, not a landing state:
+  // a first-time visitor who has not connected a key should see "配好模型才能开演", not a scripted
+  // show that quietly runs offline. The toggle surfaces only under `import.meta.env.DEV`.
+  scripted: false,
 };
 
 const LS = "canvas-teacher.llm";
@@ -63,7 +66,9 @@ export function loadConfig(): LlmConfig {
     const raw = localStorage.getItem(LS);
     if (!raw) return structuredClone(DEFAULT_CONFIG);
     const stored = { ...structuredClone(DEFAULT_CONFIG), ...(JSON.parse(raw) as LlmConfig) };
-    return { ...stored, providers: stored.providers.map(dropKey) };
+    // Rehearsal is a dev harness with a dev-only toggle. A stale `scripted:true` carried in from a
+    // dev origin must not put a production build into a fake show there is no UI to turn off.
+    return { ...stored, scripted: import.meta.env.DEV && stored.scripted, providers: stored.providers.map(dropKey) };
   } catch {
     return structuredClone(DEFAULT_CONFIG);
   }
@@ -132,9 +137,13 @@ export type Role = "director" | "painter";
 
 let collection: MutableModels | null = null;
 let builtFor = "";
-let faux: ReturnType<typeof fauxProvider> | null = null;
-let fauxModel: Model<Api> | null = null;
-let scriptedQueue = 0;
+/**
+ * Rehearsal runs one scripted provider per role. A background paint and the director's next turn
+ * interleave in no repeatable order, so a single shared queue would let one role eat the other's
+ * script lines; separate queues make each role's path deterministic on its own.
+ */
+const faux = new Map<Role, ReturnType<typeof fauxProvider>>();
+const fauxModel = new Map<Role, Model<Api>>();
 
 export function getModels(cfg: LlmConfig): MutableModels {
   const key = JSON.stringify({ p: cfg.providers.map((p) => [p.id, p.baseUrl, p.api, p.models.length]), s: cfg.scripted });
@@ -142,11 +151,14 @@ export function getModels(cfg: LlmConfig): MutableModels {
   const m = createModels({ credentials: credentialStore });
   m.clearProviders();
   if (cfg.scripted) {
-    faux = fauxProvider({ provider: "scripted", models: [{ id: "rehearsal", name: "排练脚本" }] });
-    fauxModel = faux.getModel() as Model<Api>;
-    m.setProvider(faux.provider);
+    for (const role of ["director", "painter"] as Role[]) {
+      const f = fauxProvider({ provider: `scripted-${role}`, models: [{ id: "rehearsal", name: role === "director" ? "排练剧本" : "排练美工" }] });
+      faux.set(role, f);
+      fauxModel.set(role, f.getModel() as Model<Api>);
+      m.setProvider(f.provider);
+    }
   }
-  for (const p of cfg.providers.filter((x) => x.id !== "scripted")) {
+  for (const p of cfg.providers.filter((x) => !x.id.startsWith("scripted-"))) {
     m.setProvider(
       createProvider({
         id: p.id,
@@ -189,7 +201,7 @@ export async function forgetKey(providerId: string) {
 export function modelFor(cfg: LlmConfig, role: Role): Model<ChatApi> | undefined {
   if (cfg.scripted) {
     getModels(cfg);
-    return (fauxModel as unknown as Model<ChatApi>) ?? undefined;
+    return (fauxModel.get(role) as unknown as Model<ChatApi>) ?? undefined;
   }
   const want = role === "director" ? cfg.director : cfg.painter;
   const p = cfg.providers.find((x) => x.id === want.provider);
@@ -240,17 +252,30 @@ export async function streamTurn(
   const model = modelFor(cfg, role);
   if (!model) throw new Error(`模型未配置：${role}`);
   const m = getModels(cfg);
-  const scripted = cfg.scripted && faux;
+  const f = cfg.scripted ? faux.get(role) : undefined;
   // A rehearsal script is a fixture of fixed length. Running out of lines is the end of the
   // rehearsal, not a provider failure — so the loop gets a stop message instead of an error,
   // and an interruption that resumes the main line can never end in a red status line.
-  if (scripted) {
-    if (scriptedQueue <= 0) return { message: fauxAssistantMessage("（排练剧本到这里演完了。真实演出由模型自己决定说到哪儿。）", { stopReason: "stop" }) };
-    scriptedQueue--;
+  if (f) {
+    if (role === "painter") {
+      // Briefed frames deliver in pipeline order, which is not script order. Concurrent painters
+      // share one provider, so the queue cannot hold a fixed per-prop line — the next request
+      // would find whichever drawing some sibling queued. It holds a router instead: every
+      // appended step resolves against its OWN brief, at consumption time, and pops that prop's
+      // shelf. Appending (never replacing) keeps a sibling's pending draw intact.
+      const want = paintPropId(context as { messages?: { content?: unknown }[] });
+      if (!want || (paintScript.get(want)?.left ?? 0) <= 0) {
+        return { message: fauxAssistantMessage("（美工暂时没接到活。）", { stopReason: "stop" }) };
+      }
+      f.appendResponses([resolvePaintShelf] as never);
+    } else {
+      if (directorQueue <= 0) return { message: fauxAssistantMessage("（排练剧本到这里演完了。真实演出由模型自己决定说到哪儿。）", { stopReason: "stop" }) };
+      directorQueue--;
+    }
   }
   const stream = m.streamSimple(model, context, {
     toolChoice: "auto",
-    reasoning: scripted ? undefined : cfg.thinking === "off" ? undefined : (cfg.thinking as never),
+    reasoning: f ? undefined : cfg.thinking === "off" ? undefined : (cfg.thinking as never),
     signal,
   } as never);
   for await (const ev of stream) {
@@ -267,16 +292,48 @@ export async function streamTurn(
   return { message };
 }
 
-export function setScriptedResponses(steps: AssistantMessage[]) {
-  scriptedQueue = steps.length;
-  faux?.setResponses(steps as never);
+/** Scripted artwork per prop: the rehearsal painter answers whoever's brief is in the pipeline. */
+const paintScript = new Map<string, { steps: AssistantMessage[]; left: number }>();
+let directorQueue = 0;
+
+/**
+ * The prop a painter request is for, read off its transcript. `normalizeContext` folds the system
+ * prompt into `messages[0]` before a faux step is resolved, so the `道具：<id>` line is never at a
+ * fixed index — scan every message. The PAINTER prompt talks about 道具 in the abstract but never
+ * writes one next to a real id, so `道具：vec-a` only ever matches an actual brief.
+ */
+function paintPropId(context: { messages?: { content?: unknown }[] }): string | undefined {
+  const text = (context.messages ?? []).map((m) => (typeof m.content === "string" ? m.content : "")).join("\n");
+  return [...paintScript.keys()].find((id) => text.includes(`道具：${id}`));
+}
+
+/**
+ * A faux response step that resolves by the request it is handed, not by its position in the
+ * queue. Concurrent painters share one provider; putting this (rather than a fixed drawing) in the
+ * queue means the drawing a stream gets is the one for its own prop brief, whoever else queued
+ * between its dispatch and its consumption. It pops that prop's shelf in dispatch order.
+ */
+function resolvePaintShelf(context: { messages: { content: unknown }[] }): AssistantMessage {
+  const id = paintPropId(context);
+  const entry = id ? paintScript.get(id) : undefined;
+  if (!entry || entry.left <= 0) return fauxAssistantMessage("（美工那一格的谱子已经用完。）", { stopReason: "stop" });
+  const step = entry.steps[entry.steps.length - entry.left];
+  entry.left--;
+  return step;
+}
+
+/** Load the director's script lines; `paints` restocks each prop's scripted artwork. */
+export function setScriptedResponses(steps: AssistantMessage[], paints: Record<string, AssistantMessage[]> = {}) {
+  directorQueue = steps.length;
+  faux.get("director")?.setResponses(steps as never);
+  for (const [id, art] of Object.entries(paints)) paintScript.set(id, { steps: art, left: art.length });
 }
 
 export function queueScriptedResponses(steps: AssistantMessage[]) {
-  scriptedQueue += steps.length;
-  faux?.appendResponses(steps as never);
+  directorQueue += steps.length;
+  faux.get("director")?.appendResponses(steps as never);
 }
 
 export function scriptedReady() {
-  return !!faux;
+  return !!faux.get("director");
 }

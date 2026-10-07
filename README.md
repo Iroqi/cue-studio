@@ -91,7 +91,7 @@ npm install
 npm run dev            # http://localhost:5173
 ```
 
-**排练模式（不花一个 token）**：配置抽屉顶部勾"本地排练模式（不联网，用固定谱子驱动同一套舞台）"，走 pi-ai 的 faux provider（进程内 yield 一份固定谱子：向量加法 / 力的分解）。引擎语义、运镜、转场、gate、打断回卷、录像重放都在这一层验。
+**排练模式（不花一个 token）**：只在 `npm run dev` 下出现——配置抽屉顶部会多一个"本地排练模式（不联网，用固定谱子驱动同一套舞台）"的勾，勾上即走 pi-ai 的 faux provider（进程内 yield 一份固定谱子：向量加法 / 力的分解）。生产构建里这个勾根本不渲染，`DEFAULT_CONFIG.scripted = false`。引擎语义、运镜、转场、gate、打断回卷、录像重放都在这一层验。
 
 **接真模型**：打开配置抽屉的"模型接入"，加一个 provider。支持两种形状：`openai-completions`（OpenAI 兼容 `/chat/completions`）和 `anthropic-messages`。密钥存在 `localStorage`（`canvas-teacher.credential.<id>`），配置行为 `canvas-teacher.llm`。
 

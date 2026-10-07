@@ -90,8 +90,12 @@ export class Stage {
   asideResume: { track: TrackId; t: number } | null = null;
   /** Frames a paint is in flight for. A frame they will fill is not delivered until it lands. */
   private artFor = new Set<string>();
+  /** Paints dispatched to run in the background. Their frames are owed even once the turn has moved on. */
+  private painting = new Set<string>();
   /** A director or painter turn is in flight: the empty frames it scheduled are still expected. */
   private turnOpen = false;
+  /** Parked on a learner gate: nothing on the tape is owed, or the card the turn waits on is unreachable. */
+  private debtSuspended = false;
   private owed = 0;
   /** Debt that refused the last step: the clock parks a frame short of a beat edge, where the beat under the playhead reads nothing. */
   private blockedBy = 0;
@@ -136,6 +140,7 @@ export class Stage {
     this.live = true;
     this.gateAnswer = null;
     this.artFor.clear();
+    this.painting.clear();
     this.turnOpen = false;
     this.blockedBy = 0;
     this.recompile();
@@ -154,9 +159,10 @@ export class Stage {
     return this.track === MAIN_TRACK || !this.compiledAside ? this.compiledMain : this.compiledAside;
   }
 
-  append(ops: Op[], track: TrackId = this.track) {
-    this.log.append(ops, track);
+  append(ops: Op[], track: TrackId = this.track): OpEntry[] {
+    const added = this.log.append(ops, track);
     this.recompile();
+    return added;
   }
 
   /** The tape head: transient partial visuals while the model is still emitting them. */
@@ -185,10 +191,36 @@ export class Stage {
     if (this.artFor.delete(id)) this.emit();
   }
 
+  /**
+   * A paint dispatched to run in the background: its frame is owed until it lands, whoever is
+   * working on the tape head when it does. `beginPaint` must be matched by `endPaint` on every
+   * path out — delivered, failed, or cancelled — for the same reason `beginArt` must be.
+   */
+  beginPaint(id: string) {
+    this.painting.add(id);
+    this.emit();
+  }
+
+  endPaint(id: string) {
+    if (this.painting.delete(id)) this.emit();
+  }
+
   /** The teacher's turn owns the debt: while it is open, an empty frame is a frame still expected. */
   setTurnOpen(on: boolean) {
     if (this.turnOpen === on) return;
     this.turnOpen = on;
+    this.emit();
+  }
+
+  /**
+   * Called in every debt a turn holds — including background paints, which outlive the turn that
+   * dispatched them. A director parked on a question cannot pay art debt, and a beat that owes a
+   * frame would hold the clock short of the very card it is waiting for. Nothing is abandoned by
+   * this: the debt is re-billed on resume, and delivered art lands on the tape regardless.
+   */
+  setDebtSuspended(on: boolean) {
+    if (this.debtSuspended === on) return;
+    this.debtSuspended = on;
     this.emit();
   }
 
@@ -338,10 +370,12 @@ export class Stage {
    * paint still in flight for a frame of it. A streaming drawing is NOT delivery — the tape head has
    * to finish before the line that describes it can start, which is what let captions run ahead.
    * An empty frame from a beat already read is not owed any more: a frame the director walked away
-   * from must not park the clock forever.
+   * from must not park the clock forever — unless a paint was dispatched for it, which is owed no
+   * matter whose turn is open, because it is the background pipeline that keeps the clock running.
    */
   private owedAt(t: number): number {
-    if (!this.live || !this.turnOpen) return 0;
+    if (!this.live || this.debtSuspended) return 0;
+    if (!this.turnOpen && this.artFor.size === 0 && this.painting.size === 0) return 0;
     let start = t;
     let end = t;
     for (const c of this.compiled.cues) {
@@ -363,13 +397,21 @@ export class Stage {
       if (onStage.length === 0) continue;
       const rev = onStage[onStage.length - 1];
       if (this.swept(rev, cut)) continue;
-      if (!painted(rev) && inThisBeat(rev.t)) n++;
+      if (!painted(rev) && inThisBeat(rev.t) && (this.turnOpen || !this.painting.has(p.id))) n++;
     }
     for (const id of this.artFor) {
       const p = this.compiled.props.get(id);
       const rev = p?.revisions[p.revisions.length - 1];
       // A frame being drawn that has not reached the tape is being made for right now.
       if (!rev || inThisBeat(rev.t)) n++;
+    }
+    for (const id of this.painting) {
+      if (this.turnOpen || this.artFor.has(id)) continue; // already billed by the loops above
+      const p = this.compiled.props.get(id);
+      const rev = p?.revisions[p.revisions.length - 1];
+      // A background paint is owed to the beat it was placed in; a beat not reached yet bills
+      // nothing here, or the clock would stand still for art belonging to a later line.
+      if (!rev || (inThisBeat(rev.t) && !painted(rev))) n++;
     }
     return n;
   }
