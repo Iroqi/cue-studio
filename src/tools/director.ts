@@ -195,6 +195,12 @@ export function directorTools(
       case "fetch_prop": {
         const p = stage.compiled.props.get(S(args.id));
         if (!p) return { ops, result: `no prop named ${S(args.id)}`, isError: true };
+        // A name the tape only ever *mentioned* (a `link` to something never built) is in the prop
+        // table with no frame at all. Reading it as a finished prop is what used to crash the turn:
+        // this is the second reader of `revisions.at(-1)`, and it answers straight into the director's
+        // context — so say what the tape actually holds instead of throwing.
+        if (p.revisions.length === 0)
+          return { ops, result: `${S(args.id)} 在道具表里，但带上还没有它的一帧：它只被 link 念到过名字，没有画面也没有位置。要么它还没上台（先 build/paint），要么这是拼错了。`, isError: true };
         const r = p.revisions[p.revisions.length - 1];
         return {
           ops,

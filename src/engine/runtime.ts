@@ -738,6 +738,7 @@ export class Stage {
     }
     const live = [...c.props.values()]
       .filter((p) => p.discardedAt === undefined || p.discardedAt > this.t)
+      .filter((p) => p.revisions.length > 0)
       .map((p) => {
         const r = p.revisions[p.revisions.length - 1];
         const off = this.swept(r, cut) ? "·已被换场扫走（recall 才带得回来）" : "";
