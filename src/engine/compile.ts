@@ -2,7 +2,6 @@ import type {
   Beat,
   Box,
   BeatOp,
-  BuildOp,
   CameraOp,
   Compiled,
   Cue,
@@ -11,7 +10,6 @@ import type {
   Op,
   OpEntry,
   Prop,
-  RecallOp,
   Revision,
   TransitionOp,
 } from "./types";
@@ -35,12 +33,31 @@ const MIN_CLOSEUP_W = 450;
  */
 const BOARD_SPACING = 2400;
 
+/**
+ * The frame that holds every box given. A spread (`Math.min(...boxes.map(...))`) is a *stack* argument
+ * list, so this looked fine until a tape named a lot of things at once: 130k of them and the compiler
+ * threw RangeError before it produced a single cue — which is not an ugly shot but a board that never
+ * loads. A stranger's `#s=` link is allowed to say "frame everything".
+ *
+ * A box with nothing finite in it is skipped rather than averaged in: the old spread produced NaN, and
+ * NaN in a camera frame is a board nobody can see. Bounding is the tape door's job (`guard.geometry`);
+ * this is the interpreter refusing to be the second one to be fooled by it.
+ */
 export function unionBox(boxes: Box[]): Box {
-  if (boxes.length === 0) return { ...VIEWPORT };
-  const x1 = Math.min(...boxes.map((b) => b.x));
-  const y1 = Math.min(...boxes.map((b) => b.y));
-  const x2 = Math.max(...boxes.map((b) => b.x + b.w));
-  const y2 = Math.max(...boxes.map((b) => b.y + b.h));
+  let x1 = Infinity;
+  let y1 = Infinity;
+  let x2 = -Infinity;
+  let y2 = -Infinity;
+  for (const b of boxes) {
+    if (!(b.w > 0) || !(b.h > 0)) continue;
+    if (!Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
+    if (b.x < x1) x1 = b.x;
+    if (b.y < y1) y1 = b.y;
+    // Corners too, or one far-enough box silently drops out of the frame that is supposed to hold it.
+    if (b.x + b.w > x2) x2 = b.x + b.w;
+    if (b.y + b.h > y2) y2 = b.y + b.h;
+  }
+  if (![x1, y1, x2, y2].every(Number.isFinite)) return { ...VIEWPORT };
   return { x: x1, y: y1, w: Math.max(x2 - x1, 1), h: Math.max(y2 - y1, 1) };
 }
 
@@ -114,6 +131,14 @@ export function compile(entries: OpEntry[]): Compiled {
   const props = new Map<string, Prop>();
   const cues: Cue[] = [];
   const gates: Gate[] = [];
+  // A card is looked up by `seq` twice: once when the learner's answer arrives, once when the beats are
+  // closed off to find the window it was asked in. Both are keyed here rather than scanned, because a
+  // scan makes a tape with many cards cost one pass over all of them *per card* — which is the same
+  // frozen tab a bad number is, just slower to notice.
+  const gateBySeq = new Map<number, Gate>();
+  // Which beat an op was laid down in, keyed as the beats are built — so closing a card's window below
+  // asks a map instead of searching every beat's `seqs` for it.
+  const seqBeat = new Map<number, Beat>();
   const beats: Beat[] = [];
   let cur: Beat | null = null;
   let openNext = false;
@@ -259,10 +284,19 @@ export function compile(entries: OpEntry[]): Compiled {
    * object in the space the cut is walking away from, and the audience watches a camera glide to an
    * empty frame. Only `pan`/`zoom` are looked ahead: they resolve purely from the frame, and a
    * `fit`/`focus` that names this very prop is resolved after it lands, which already frames it.
+   *
+   * The scan is bounded. Reading the tail is per placement, so an unbounded walk makes a beat cost
+   * O(props²): 40k briefed placeholders with no line between them measured 7.4 seconds inside the
+   * compiler — a frozen tab, not a slow show. A beat's camera tail is a move or two, so cutting the
+   * look-ahead after `LOOKAHEAD_OPS` entries is exact for anything a director actually performs and
+   * constant-cost for a tape that does not.
    */
+  const LOOKAHEAD_OPS = 256;
+
   const placementView = (at: number): Box => {
     let view = cursor;
-    for (let n = at + 1; n < entries.length; n++) {
+    const stop = Math.min(entries.length, at + LOOKAHEAD_OPS + 1);
+    for (let n = at + 1; n < stop; n++) {
       const next = entries[n].op;
       if (ownsTime(next)) break;
       if (next.kind === "camera" && (next.mode === "pan" || next.mode === "zoom")) view = resolve(next, view);
@@ -280,6 +314,16 @@ export function compile(entries: OpEntry[]): Compiled {
     if (scene && standing && scene !== standing) return boardView(scene, cursor.w / cursor.h);
     return placementView(at);
   };
+
+  /**
+   * The box a `build`/`recall` lands on. Computing the placement frame is the expensive half of this,
+   * and it is only ever meaningful for an op that asked for it — so the view is behind a thunk rather
+   * than an argument. Naming it eagerly looked harmless and was not: `placementView` scans forward to
+   * the next line, so a tape of 130k coordinate-carrying props spent 49 seconds re-deriving frames it
+   * never used, which is a frozen tab before a single cue exists.
+   */
+  const placedBox = (raw: Box, here: boolean | undefined, at: number, scene: string): Box =>
+    here ? framed(raw, true, hereView(at, scene)) : raw;
 
   const ensureProp = (id: string, scene: string): Prop => {
     let p = props.get(id);
@@ -305,6 +349,7 @@ export function compile(entries: OpEntry[]): Compiled {
       beats.push(cur);
     }
     cur.seqs.push(entry.seq);
+    seqBeat.set(entry.seq, cur);
     if (!cur.verbs.includes(op.kind)) cur.verbs.push(op.kind);
     if (!cur.headline) {
       if (op.kind === "narrate") cur.headline = op.text;
@@ -322,7 +367,7 @@ export function compile(entries: OpEntry[]): Compiled {
         if (op.scene) p.scene = op.scene;
         const prev = p.revisions[p.revisions.length - 1];
         const fillingPlaceholder = op.kind === "patch" && prev?.partial;
-        const box = op.kind === "build" ? framed((op as BuildOp).box, (op as BuildOp).here, hereView(i, p.scene)) : op.box ?? prev?.box ?? { ...VIEWPORT };
+        const box = op.kind === "build" ? placedBox(op.box, op.here, i, p.scene) : op.box ?? prev?.box ?? { ...VIEWPORT };
         const revision: Revision = {
           t: fillingPlaceholder ? prev.t : start,
           scene: p.scene,
@@ -345,7 +390,7 @@ export function compile(entries: OpEntry[]): Compiled {
         if (!src || src.revisions.length === 0) break;
         const prev = src.revisions[src.revisions.length - 1];
         src.scene = op.scene || standing || "default";
-        src.revisions.push({ ...prev, t: start, scene: src.scene, box: framed((op as RecallOp).box, (op as RecallOp).here, hereView(i, src.scene)) });
+        src.revisions.push({ ...prev, t: start, scene: src.scene, box: placedBox(op.box, op.here, i, src.scene) });
         src.discardedAt = undefined;
         break;
       }
@@ -384,13 +429,15 @@ export function compile(entries: OpEntry[]): Compiled {
       }
       case "quiz":
       case "pause-for": {
-        gates.push({ t: start, seq: entry.seq, kind: op.kind, op, said: null, until: start });
+        const gate: Gate = { t: start, seq: entry.seq, kind: op.kind, op, said: null, until: start };
+        gates.push(gate);
+        gateBySeq.set(entry.seq, gate);
         break;
       }
       case "answer": {
         // A record, not a move: his words hold no clock, and the cut-tape rule still applies —
         // rewinding past a card takes his answer back with it, because this is the only place they exist.
-        const asked = gates.find((g) => g.seq === op.gate);
+        const asked = gateBySeq.get(op.gate);
         if (asked && asked.said === null) asked.said = op.text;
         break;
       }
@@ -408,12 +455,18 @@ export function compile(entries: OpEntry[]): Compiled {
   // shown inside it and nowhere after: a card answered at the top of a lesson must not still be
   // standing on the board two scenes later.
   for (const g of gates) {
-    const asked = beats.find((b) => b.seqs.includes(g.seq));
+    const asked = seqBeat.get(g.seq);
     if (asked) g.until = asked.end;
   }
 
   const scenes = new Map<string, Box>();
+  // One board's bounds used to be recomputed once *per prop on it*, and each recompute walked every
+  // prop: a 20k-prop tape took 140 seconds to compile, which is the tab freezing, not a slow frame.
+  // The question "what does this board cover" has one answer per name, so ask it once per name.
+  const measured = new Set<string>();
   for (const p of props.values()) {
+    if (measured.has(p.scene)) continue;
+    measured.add(p.scene);
     const b = sceneBox(props, p.scene);
     if (b) scenes.set(p.scene, b);
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compile, VIEWPORT } from "./compile";
+import { compile, unionBox, VIEWPORT } from "./compile";
 import type { Box, BuildOp, CameraOp, HighlightOp, MotionOp, NarrateOp, Op, OpEntry, RecallOp, TransitionOp } from "./types";
 
 const tape = (...ops: Op[]): OpEntry[] => ops.map((op, i) => ({ seq: i, track: "main", turn: 0, op }));
@@ -172,5 +172,91 @@ describe("compile：同一帧里连着多个 here，一个都不许正好压在�
       expect(b.x + b.w).toBeLessThanOrEqual(VIEWPORT.w + 1);
       expect(b.y + b.h).toBeLessThanOrEqual(VIEWPORT.h + 1);
     }
+  });
+
+  it("界内的那一刀仍然算数：占位符排在镜头之前，就得跟着镜头走", () => {
+    const ops: Op[] = [];
+    for (let i = 0; i < 250; i++) ops.push(unnamed(`p${i}`));
+    ops.push(slide("right", 1));
+    const show = compile(tape(...ops, line("收住这一拍", 1000)));
+    const move = show.cues.find((c) => c.op.kind === "camera")!;
+    const boxOf = show.props.get("p0")!.revisions[0].box;
+    expect(boxOf.x + boxOf.w / 2).toBeGreaterThan(move.to.x);
+  });
+});
+
+/*
+ * 解释器自己也不许是二次的。断的是**比值**不是秒数：机器快慢会飘，四倍输入应该是四倍时间，
+ * 二次的话是十六倍 —— 那才是"标签页冻住"的形状，而它和具体哪台机器无关。
+ *
+ * 三条各守一处旧代码：一板的地皮以前每格道具重测一遍整板；`answer` 以前从头扫一遍卡表；
+ * `here` 以前每格道具把身后的带读到底（这条旧版实测 40k 占位符 7.4 秒，而本版 0.2 秒）。
+ */
+describe("compile：一条长带付一次线性的价钱", () => {
+  const entries = (n: number, mk: (i: number) => Op): OpEntry[] =>
+    Array.from({ length: n }, (_, i) => ({ seq: i, track: "main" as const, turn: 0, op: mk(i) }));
+
+  /** 取三次的最小值：GC 和别人的标签页只会让一次测量变慢，不会让它变快。带本身在外面建好，量的是解释器。 */
+  const best = (list: OpEntry[]): number => {
+    let out = Infinity;
+    for (let k = 0; k < 3; k++) {
+      const started = performance.now();
+      compile(list);
+      out = Math.min(out, performance.now() - started);
+    }
+    return out;
+  };
+
+  /**
+   * 输入翻四倍，时间不许翻到二次的那个量级去。两边都取到几十毫秒以上，否则量的是计时器的
+   * 分辨率和 GC 的抖动，不是这条带的形状。
+   */
+  const linear = (mk: (i: number) => Op, small: number) => {
+    const a = best(entries(small, mk));
+    const b = best(entries(small * 4, mk));
+    expect(a).toBeGreaterThan(10);
+    return b / a;
+  };
+
+  it("五万格道具：一板的地皮测一遍就够了，不是每格道具测一遍整板", () => {
+    const bare = (i: number): Op => ({ kind: "build", id: `a${i}`, label: "l", box: { x: 0, y: 0, w: 10, h: 10 }, html: "<p>a</p>" });
+    expect(linear(bare, 10_000)).toBeLessThan(9);
+    // 去重不许改答案：这块板还是那一块板。
+    const show = compile(entries(50_000, bare));
+    expect(show.scenes.get("default")).toEqual({ x: 0, y: 0, w: 10, h: 10 });
+    expect(show.props.size).toBe(50_000);
+  });
+
+  it("每题一答：回答按 seq 查卡，不从头扫一遍卡表", () => {
+    const cards = (i: number): Op => (i % 2 === 0 ? ({ kind: "quiz", prompt: "几", options: ["1", "2"], answer: 1 } as Op) : ({ kind: "answer", gate: i - 1, text: "1" } as Op));
+    expect(linear(cards, 20_000)).toBeLessThan(9);
+    const show = compile(entries(8000, cards));
+    expect(show.gates.length).toBe(4000);
+    // 每一句回答都认到了自己那张卡 —— 这是 `gateBySeq` 的语义，不是它快不快。
+    expect(show.gates.every((g) => g.said === "1")).toBe(true);
+  });
+
+  it("here 的 look-ahead 有界：不把整条带读一遍", () => {
+    expect(linear((i) => unnamed(`p${i}`), 6_000)).toBeLessThan(9);
+  });
+});
+
+/** 框住一切的那个函数：它是相机算术的入口，所以它自己不许是第二个被骗的。 */
+describe("compile：unionBox 兜住没有画面的盒子", () => {
+  it("十三万个盒子不许把栈压垮 —— 展开是栈上的参数表", () => {
+    const boxes = Array.from({ length: 130_000 }, (_, i) => ({ x: i * 10, y: 0, w: 10, h: 10 }));
+    expect(() => unionBox(boxes)).not.toThrow();
+    expect(unionBox(boxes)).toEqual({ x: 0, y: 0, w: 1_300_000, h: 10 });
+  });
+
+  it("一个 NaN 的盒子被跳过，不是把整帧变成 NaN", () => {
+    const good = { x: 100, y: 100, w: 300, h: 200 };
+    expect(unionBox([good, { x: NaN, y: 0, w: 10, h: 10 }])).toEqual(good);
+    // 全是坏的：回到一屏，因为 NaN 的一帧是观众看不见的板，不是"没有东西可框"。
+    for (const junk of [{ x: 0, y: 0, w: NaN, h: 5 }, { x: 0, y: 0, w: Infinity, h: 5 }]) {
+      expect(unionBox([junk])).toEqual(VIEWPORT);
+    }
+    // 没有东西可框仍然是 VIEWPORT，而不是一个 Infinity 的框：调用方直接拿它做除法。
+    expect(unionBox([])).toStrictEqual(VIEWPORT);
   });
 });
