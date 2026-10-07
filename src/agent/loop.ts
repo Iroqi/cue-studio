@@ -6,6 +6,7 @@ import { directorTools, type DirectorResult, type TeachingState } from "../tools
 import { GRAMMAR, PAINTER, stateSections } from "./prompt";
 import { missesOn, record as archiveAttempt, summary as learnerHistory } from "./archive";
 import { streamTurn, type LlmConfig, type Role, type TurnEvents, type TurnResult } from "../llm/llm";
+import { ceilingChars, prune } from "./budget";
 
 const PAINT_TOOL: Tool = {
   name: "paint",
@@ -250,6 +251,30 @@ export class Teacher {
   }
 
   /**
+   * The director's context window, or 0 when we are not pointed at a model we can size — rehearsal
+   * included. Nothing is pruned on a 0: a budget guessed from a fake transcript would cut real work on
+   * the wrong side of the window.
+   */
+  private windowForDirector(): number {
+    if (this.cfg.scripted) return 0;
+    const p = this.cfg.providers.find((x) => x.id === this.cfg.director.provider);
+    return p?.models.find((m) => m.id === this.cfg.director.model)?.contextWindow ?? 0;
+  }
+
+  /**
+   * Keep the transcript inside the window, in place, so the pruning is permanent: an old turn deflates
+   * once and its bytes never change again, which is what lets the provider's prefix cache hold.
+   */
+  private trimContext(transcript: Message[]) {
+    const window = this.windowForDirector();
+    if (!window) return;
+    const cut = prune(transcript, ceilingChars(window));
+    if (cut.collapsed === 0) return;
+    for (let i = 0; i < cut.messages.length; i++) transcript[i] = cut.messages[i];
+    this.ev.onStatus?.(`导演的上下文超过窗口了：把最早 ${cut.collapsed} 拍的图形源码折回成指针（东西都在带上，fetch_prop 读得回来）。`);
+  }
+
+  /**
    * One model call, waited out when the provider throttles. Both roles draw on the same
    * tokens-per-minute budget, so a painter that fails on the first 429 hands the director an error he
    * can only answer by asking for the same artwork again — burning the window a second time.
@@ -290,6 +315,9 @@ export class Teacher {
         }
         this.ev.onTurnStart?.(beatNo);
         this.ev.onStatus?.(`导演思考中（第 ${beatNo} 拍）…`);
+        // Pay the budget before the call, not after the provider rejects it: the tape is the memory here,
+        // and a lesson of any length outgrows a window on payload the director already saw and drew.
+        if (!isAside) this.trimContext(transcript);
         let message: AssistantMessage;
         try {
           message = (
@@ -626,7 +654,12 @@ export class Teacher {
     }
     if (out.result.startsWith("question queued") || out.result.startsWith("stage clock will stop")) {
       const gates = this.stage.openGateSeqs();
-      const seq = gates[gates.length - 1];
+      // Park on the card the clock walks into first, not the one this turn queued last. The two differ
+      // when an earlier pass left a card open on the tape — re-performing a passage from a point after
+      // that card keeps the question and drops the answer. Parking on the newest card then waits on a
+      // promise for a card nobody is shown, while the learner answers the one on screen: his words close
+      // the wrong card and the turn hangs mid-sentence with the board stopped.
+      const seq = gates[0];
       this.stage.play();
       this.ev.onStatus?.("等学习者回答…");
       this.parkedGate = seq;

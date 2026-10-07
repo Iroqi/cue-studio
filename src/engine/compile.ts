@@ -363,7 +363,14 @@ export function compile(entries: OpEntry[]): Compiled {
       }
       case "quiz":
       case "pause-for": {
-        gates.push({ t: start, seq: entry.seq, kind: op.kind, op });
+        gates.push({ t: start, seq: entry.seq, kind: op.kind, op, said: null, until: start });
+        break;
+      }
+      case "answer": {
+        // A record, not a move: his words hold no clock, and the cut-tape rule still applies —
+        // rewinding past a card takes his answer back with it, because this is the only place they exist.
+        const asked = gates.find((g) => g.seq === op.gate);
+        if (asked && asked.said === null) asked.said = op.text;
         break;
       }
       case "beat": {
@@ -374,6 +381,14 @@ export function compile(entries: OpEntry[]): Compiled {
     if (ownsTime(op)) t = start + cueMs(op);
     cur.end = Math.max(cur.end, t);
     openNext = speaks;
+  }
+
+  // A card's window is the beat that asked it, now that the beats have been closed off. His answer is
+  // shown inside it and nowhere after: a card answered at the top of a lesson must not still be
+  // standing on the board two scenes later.
+  for (const g of gates) {
+    const asked = beats.find((b) => b.seqs.includes(g.seq));
+    if (asked) g.until = asked.end;
   }
 
   const scenes = new Map<string, Box>();

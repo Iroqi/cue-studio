@@ -299,12 +299,17 @@ button.x {
 }
 
 /*
- * dim-rest: the named prop keeps its light and everything else on the board steps back. The class
- * lives on `.world` (StageView marks it there) because the dimming is a statement about the *rest*
- * of the board — doing it per prop would need every other prop id in the selector.
+ * dim-rest: the named prop keeps its light and everything else on the board steps back. The mark has
+ * to go on `.world` (StageView puts it there) because "the rest" is not something a per-prop selector
+ * can name — and the old rule waited for `.dim-rest` while the renderer hung `hl-dim-rest`, so the two
+ * never met and the verb was an empty promise.
  */
+.prop.hl-dim-rest {
+  filter: drop-shadow(0 0 12px var(--am));
+}
+
 .world.dim-rest .prop:not(.hl-dim-rest) {
-  opacity: 0.22;
+  opacity: 0.26;
 }
 
 @keyframes pulse {
@@ -1050,6 +1055,26 @@ summary {
 .verdict.ok {
   border-color: rgba(134, 239, 172, 0.5);
   color: #86efac;
+}
+
+/* His answer, read off the tape: on a replay there is no card to click, but the dialogue still has
+   to show both sides of it — a lecture with the learner's half cut out is not what happened. */
+.echo {
+  position: absolute;
+  left: 50%;
+  top: 62px;
+  transform: translateX(-50%);
+  z-index: 6;
+  max-width: min(60ch, 82%);
+  padding: 8px 15px;
+  border-radius: 999px;
+  font-size: 13px;
+  text-align: center;
+  background: rgba(18, 16, 32, 0.92);
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  color: var(--cy);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
 }
 
 .archive {
