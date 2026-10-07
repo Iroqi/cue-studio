@@ -51,6 +51,15 @@ export class OpLog {
     return this.entries.slice();
   }
 
+  /**
+   * How many ops are on the tape, without making a copy of it. `all()` is the right thing for exporting
+   * and the wrong thing for a render path: the clock re-renders sixty times a second, and a view that
+   * only wants to know "is there a show yet?" should not pay for the whole tape to find out.
+   */
+  get length(): number {
+    return this.entries.length;
+  }
+
   entryAt(seq: number): OpEntry | undefined {
     return this.entries.find((e) => e.seq === seq);
   }
