@@ -310,10 +310,12 @@ export function StageView({ stage, bottomInset = 0 }: { stage: Stage; bottomInse
   const oy = (usable.h - rect.h * scale) / 2 - rect.y * scale;
   const three = s.props.filter((p) => p.scene3d).length;
   const drag = s.props.some((p) => p.scene3d?.interactive);
+  // `dim-rest` names one prop and dims the *rest*, so the mark has to go on the board, not the prop.
+  const dimRest = s.props.some((p) => p.highlight === "dim-rest");
 
   return (
     <div className="stage" data-track={s.track} ref={hostRef}>
-      <div className="world" style={{ transform: `translate(${ox}px, ${oy}px) scale(${scale})` }}>
+      <div className={`world${dimRest ? " dim-rest" : ""}`} style={{ transform: `translate(${ox}px, ${oy}px) scale(${scale})` }}>
         {s.props.map((p) => (
           <PropView key={p.id} p={p} t={s.t} />
         ))}

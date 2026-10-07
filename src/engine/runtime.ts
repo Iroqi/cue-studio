@@ -104,10 +104,41 @@ export class Stage {
   private rect: Box = { x: 0, y: 0, w: 1600, h: 900 };
   private camFrom: Box | null = null;
   private camFromAt = -1;
+  /** The show was walking when the tab went dark, so it should start walking again when it comes back. */
+  private awaitingAudience = false;
 
   constructor() {
     this.snapshot = this.render();
     this.tick = this.tick.bind(this);
+  }
+
+  /**
+   * A hidden tab is an empty room: browsers throttle rAF there to a frame a second or stop it, and
+   * the next visible frame then carries a `dt` the size of the whole absence — the learner comes back
+   * to a lesson that already ended, with the narration having read itself out to nobody. The rule that
+   * parks the clock for a picture that has not landed is the same rule for an audience that is not here.
+   */
+  private watchingAudience = false;
+
+  /** The ear is on while the clock walks, and while it waits for a room to have somebody in it. */
+  private watchAudience() {
+    const on = (this.playing || this.awaitingAudience) && typeof document !== "undefined";
+    if (on === this.watchingAudience) return;
+    this.watchingAudience = on;
+    if (on) document.addEventListener("visibilitychange", this.onVisibility);
+    else document.removeEventListener("visibilitychange", this.onVisibility);
+  }
+
+  private onVisibility = () => this.audience(!document.hidden);
+
+  private audience(seen: boolean) {
+    if (seen) {
+      if (!this.awaitingAudience) return;
+      this.play();
+      return;
+    }
+    // A show already standing still has nothing to lose: the stop it is in was someone's decision.
+    if (this.playing) this.standStill(true);
   }
 
   subscribe = (cb: () => void) => {
@@ -143,6 +174,10 @@ export class Stage {
     this.painting.clear();
     this.turnOpen = false;
     this.blockedBy = 0;
+    // A tape that was just replaced or imported is not owed an audience: it starts held, and only
+    // the learner's own play starts it walking.
+    this.awaitingAudience = false;
+    this.watchAudience();
     this.recompile();
   }
 
@@ -224,18 +259,39 @@ export class Stage {
     this.emit();
   }
 
+  private get room() {
+    return typeof document === "undefined" || !document.hidden;
+  }
+
   play() {
     if (this.playing) return;
+    // Asked to start in an empty room — an aside can finish while the tab is dark — so remember the
+    // ask and stand still, rather than walking a lesson nobody is watching.
+    if (!this.room) {
+      this.standStill(true);
+      return;
+    }
+    this.awaitingAudience = false;
     this.playing = true;
     this.last = performance.now();
+    this.watchAudience();
     this.raf = requestAnimationFrame(this.tick);
     this.emit();
   }
 
+  /** A stop the learner (or a gate, or the end of the tape) decided: not owed an audience. */
   hold() {
+    if (!this.playing && !this.awaitingAudience) return;
+    this.standStill(false);
+  }
+
+  /** @param awaitedByRoom the stop is not a decision, it is "come back when there is an audience" */
+  private standStill(awaitedByRoom: boolean) {
     this.playing = false;
+    this.awaitingAudience = awaitedByRoom;
+    this.watchAudience();
     cancelAnimationFrame(this.raf);
-    this.emit();
+    this.emit(); // the narrator reads `playing` off the snapshot, so the voice stops with the clock
   }
 
   toggle() {
@@ -295,12 +351,14 @@ export class Stage {
   }
 
   beginAside() {
+    // Through `hold()`, not just the flag: the main track's rAF is still armed when an interruption
+    // arrives, and a bare assignment leaves a loop ticking a clock that is no longer being played.
+    this.hold();
     this.asideResume = { track: MAIN_TRACK, t: this.t };
     this.track = `aside:${this.log.asides().length + 1}`;
     this.t = 0;
     this.camFrom = null;
     this.live = true;
-    this.playing = false;
     this.emit();
     return this.track;
   }
@@ -417,6 +475,9 @@ export class Stage {
   }
 
   private tick(now: number) {
+    // A frame that arrives while the show stands still is not a reason to move: a hidden tab still
+    // gets a throttled callback, and an already-armed one can land after `hold()` cancelled it.
+    if (!this.playing) return;
     const dt = (now - this.last) * this.speed;
     this.last = now;
     const dur = this.compiled.duration;

@@ -28,6 +28,13 @@ export const VIEWPORT: Box = { x: 0, y: 0, w: 1600, h: 900 };
  */
 const MIN_CLOSEUP_W = 450;
 
+/**
+ * How far apart two boards sit on the plane, when nothing on the tape says otherwise. The vocabulary
+ * promises a scene of about one viewport with boards 2000~3000 apart; 2400 is the middle of that, so
+ * the ground a named-but-empty board is given sits where a director would have put it by hand.
+ */
+const BOARD_SPACING = 2400;
+
 export function unionBox(boxes: Box[]): Box {
   if (boxes.length === 0) return { ...VIEWPORT };
   const x1 = Math.min(...boxes.map((b) => b.x));
@@ -120,6 +127,38 @@ export function compile(entries: OpEntry[]): Compiled {
   let slotKey = "";
   let slotN = 0;
 
+  /*
+   * A named board has a place on the plane. It used to have only whatever its props happened to
+   * cover, so a board named before anything was laid on it had no bounds at all: `transition` fell
+   * back to the frame it was already in, and the veil then swept the old lesson off a board the
+   * camera never left — the audience watched their picture get erased and got nothing in its place.
+   *
+   * So boards are given out in the order the show walks onto them, at the spacing the vocabulary
+   * already promises (a scene is about one viewport, boards 2000~3000 apart). Explicit coordinates
+   * still widen the frame, so a director who places things by hand is not caged by this ground; it
+   * only says where the board is when nothing on it says so yet.
+   */
+  const boards = new Map<string, Box>();
+  const boardOf = (name: string): Box => {
+    const known = boards.get(name);
+    if (known) return known;
+    const placed: Box = { x: (boards.size + 1) * BOARD_SPACING, y: 0, w: VIEWPORT.w, h: VIEWPORT.h };
+    boards.set(name, placed);
+    return placed;
+  };
+
+  /**
+   * Where the camera stands for a board. If anything has been laid on it, frame that (padded, as it
+   * always was) — a director who places by hand owns the position. If nothing has, the board still has
+   * a place, and moving the camera there is the whole point of the cut: standing still while the veil
+   * sweeps the previous board's art away leaves the learner staring at an empty frame they were never
+   * shown.
+   */
+  const boardView = (name: string, aspect: number): Box => {
+    const laid = sceneBox(props, name);
+    return fitRect(laid ? padded(laid, 1.2) : boardOf(name), aspect);
+  };
+
   /**
    * `here` is what happens when the director asks for an object but names no coordinates: it lands
    * inside the frame the camera is on, tiled so a second one does not sit exactly on the first.
@@ -142,7 +181,13 @@ export function compile(entries: OpEntry[]): Compiled {
     };
   };
 
-  const resolve = (op: CameraOp): Box => {
+  /**
+   * Where a camera op lands, given the frame it starts from. `from` is a parameter rather than the
+   * live cursor because a `here` placement has to ask this question about a move that has not been
+   * compiled yet — and a chain of two moves in one beat only looks right if the second is resolved
+   * from where the first lands.
+   */
+  const resolve = (op: CameraOp, from: Box = cursor): Box => {
     const targets: Box[] = [];
     if (op.target) {
       const ids = Array.isArray(op.target) ? op.target : [op.target];
@@ -152,7 +197,7 @@ export function compile(entries: OpEntry[]): Compiled {
       }
     }
     if (op.region) targets.push(op.region);
-    let rect = targets.length ? unionBox(targets) : cursor;
+    let rect = targets.length ? unionBox(targets) : from;
     if (op.at && targets.length === 1) {
       // A close-up frames a part, not a bigger version of the whole: the point is given as a
       // fraction of the prop's own box because the director never knows where the artwork ends.
@@ -164,23 +209,55 @@ export function compile(entries: OpEntry[]): Compiled {
       const f = Math.min(4, Math.max(0.1, op.screens ?? 0.8));
       const dx = op.dir === "right" ? f : op.dir === "left" ? -f : 0;
       const dy = op.dir === "down" ? f : op.dir === "up" ? -f : 0;
-      rect = { x: cursor.x + dx * cursor.w, y: cursor.y + dy * cursor.h, w: cursor.w, h: cursor.h };
+      rect = { x: from.x + dx * from.w, y: from.y + dy * from.h, w: from.w, h: from.h };
     }
     if (op.mode === "pan" && op.center) {
       const c = op.center;
-      rect = { x: c.x - cursor.w / 2, y: c.y - cursor.h / 2, w: cursor.w, h: cursor.h };
+      rect = { x: c.x - from.w / 2, y: c.y - from.h / 2, w: from.w, h: from.h };
     }
     if (op.mode === "zoom" && op.zoom) {
-      const c = centerOf(cursor);
+      const c = centerOf(from);
       const w = VIEWPORT.w / Math.max(op.zoom, 0.01);
-      rect = { x: c.x - w / 2, y: c.y - (w / (cursor.w / cursor.h)) / 2, w, h: w / (cursor.w / cursor.h) };
+      rect = { x: c.x - w / 2, y: c.y - (w / (from.w / from.h)) / 2, w, h: w / (from.w / from.h) };
     }
     if (op.mode === "track" && op.follow) {
       const b = propBox(props, op.follow);
-      if (b) rect = { ...cursor, x: centerOf(b).x - cursor.w / 2, y: centerOf(b).y - cursor.h / 2 };
+      if (b) rect = { ...from, x: centerOf(b).x - from.w / 2, y: centerOf(b).y - from.h / 2 };
     }
     if (op.mode === "fit") rect = padded(rect, 1.2);
-    return limitPushIn(fitRect(rect, cursor.w / cursor.h), cursor.w / cursor.h);
+    return limitPushIn(fitRect(rect, from.w / from.h), from.w / from.h);
+  };
+
+  /**
+   * The frame a `here` prop should be placed in: whatever the camera will be looking at by the time
+   * this beat is spoken, not wherever it stood when the beat's props were laid down.
+   *
+   * A skeleton says "pan one screen into the empty space, and put the new idea there" as one beat:
+   * `stage_script` emits the placeholder first and the move after it, because the prop has to be on
+   * the tape before the line that points at it. Placing by the *current* cursor then anchors the new
+   * object in the space the cut is walking away from, and the audience watches a camera glide to an
+   * empty frame. Only `pan`/`zoom` are looked ahead: they resolve purely from the frame, and a
+   * `fit`/`focus` that names this very prop is resolved after it lands, which already frames it.
+   */
+  const placementView = (at: number): Box => {
+    let view = cursor;
+    for (let n = at + 1; n < entries.length; n++) {
+      const next = entries[n].op;
+      if (ownsTime(next)) break;
+      if (next.kind === "camera" && (next.mode === "pan" || next.mode === "zoom")) view = resolve(next, view);
+    }
+    return view;
+  };
+
+  /**
+   * Where a `here` placement lands for a prop the director says belongs on a board the show is not
+   * standing on. The frame it is placed into is that board's ground, not the view under the camera
+   * right now: naming a board and then anchoring the object in another board's coordinates stacks two
+   * scenes on the same patch of plane, and the cut that follows then frames the pile.
+   */
+  const hereView = (at: number, scene: string | undefined): Box => {
+    if (scene && standing && scene !== standing) return boardView(scene, cursor.w / cursor.h);
+    return placementView(at);
   };
 
   const ensureProp = (id: string, scene: string): Prop => {
@@ -192,7 +269,8 @@ export function compile(entries: OpEntry[]): Compiled {
     return p;
   };
 
-  for (const entry of entries) {
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
     const op = entry.op;
     lastSeq = entry.seq;
     const start = t;
@@ -223,7 +301,7 @@ export function compile(entries: OpEntry[]): Compiled {
         if (op.scene) p.scene = op.scene;
         const prev = p.revisions[p.revisions.length - 1];
         const fillingPlaceholder = op.kind === "patch" && prev?.partial;
-        const box = op.kind === "build" ? framed((op as BuildOp).box, (op as BuildOp).here, cursor) : op.box ?? prev?.box ?? { ...VIEWPORT };
+        const box = op.kind === "build" ? framed((op as BuildOp).box, (op as BuildOp).here, hereView(i, p.scene)) : op.box ?? prev?.box ?? { ...VIEWPORT };
         const revision: Revision = {
           t: fillingPlaceholder ? prev.t : start,
           scene: p.scene,
@@ -246,7 +324,7 @@ export function compile(entries: OpEntry[]): Compiled {
         if (!src || src.revisions.length === 0) break;
         const prev = src.revisions[src.revisions.length - 1];
         src.scene = op.scene || standing || "default";
-        src.revisions.push({ ...prev, t: start, scene: src.scene, box: framed((op as RecallOp).box, (op as RecallOp).here, cursor) });
+        src.revisions.push({ ...prev, t: start, scene: src.scene, box: framed((op as RecallOp).box, (op as RecallOp).here, hereView(i, src.scene)) });
         src.discardedAt = undefined;
         break;
       }
@@ -274,13 +352,12 @@ export function compile(entries: OpEntry[]): Compiled {
       case "motion": {
         cues.push({ t: start, end: start + cueMs(op), op, from: cursor, to: cursor });
         if (op.kind === "transition") {
+          // Reserve the ground before anything is looked for on it, so a board cut to twice keeps the
+          // same place and `recall`ing onto it is not relative to where the camera last stood.
           standing = op.to;
-          const b = sceneBox(props, op.to);
-          if (b) {
-            const to = fitRect(padded(b, 1.2), cursor.w / cursor.h);
-            cues[cues.length - 1].to = to;
-            cursor = to;
-          }
+          const to = boardView(op.to, cursor.w / cursor.h);
+          cues[cues.length - 1].to = to;
+          cursor = to;
         }
         break;
       }

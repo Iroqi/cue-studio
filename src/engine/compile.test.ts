@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { compile } from "./compile";
-import type { HighlightOp, MotionOp, NarrateOp, Op, OpEntry, TransitionOp } from "./types";
+import type { Box, BuildOp, CameraOp, HighlightOp, MotionOp, NarrateOp, Op, OpEntry, RecallOp, TransitionOp } from "./types";
 
 const tape = (...ops: Op[]): OpEntry[] => ops.map((op, i) => ({ seq: i, track: "main", turn: 0, op }));
 
@@ -9,6 +9,8 @@ const scene = (to: string, duration: number): TransitionOp => ({ kind: "transiti
 const mark = (target: string, duration: number): HighlightOp => ({ kind: "highlight", target, style: "pulse", duration });
 const drift = (id: string, duration: number): MotionOp => ({ kind: "motion", id, mode: "oscillate", axis: "x", amp: 40, period: 1000, radius: 0, steps: 0, decay: 0, duration });
 const art = (id: string): Op => ({ kind: "build", id, box: { x: 0, y: 0, w: 200, h: 200 }, label: id, html: `<p>${id}</p>` });
+const slide = (dir: "left" | "right" | "up" | "down", screens: number): CameraOp => ({ kind: "camera", mode: "pan", dir, screens, duration: 900, easing: "ease" });
+const unnamed = (id: string, at?: string): BuildOp => ({ kind: "build", id, box: { x: 0, y: 0, w: 200, h: 200 }, label: id, html: `<p>${id}</p>`, here: true, ...(at ? { scene: at } : {}) });
 
 const LONG = "一".repeat(52);
 const SHORT = "你好";
@@ -56,5 +58,72 @@ describe("compile：每一刀的时刻，就是上一句的长短", () => {
   it("道具落在这一步的时钟位置上，不是凭空早出现", () => {
     const props = [...compile(tape(line(LONG, 2000), art("a"))).props.values()];
     expect(props[0].revisions[0].t).toBe(10300);
+  });
+});
+
+/** 一块板在平面上有一个位置，哪怕它还是空的。 */
+describe("compile：板是有地皮的", () => {
+  const contains = (b: Box, p: Box) =>
+    p.x >= b.x - 1 && p.y >= b.y - 1 && p.x + p.w <= b.x + b.w + 1 && p.y + p.h <= b.y + b.h + 1;
+
+  it("切到一块还没摆东西的板，镜头跟着幕布一起走过去", () => {
+    const cues = compile(tape(art("a"), line(SHORT, 1000), scene("下一板", 1000))).cues;
+    const cut = cues.find((c) => c.op.kind === "transition")!;
+    // 老行为：from === to，于是观众看着自己的画被擦掉，换来了一个空框。
+    expect(cut.to).not.toEqual(cut.from);
+    expect(contains(cut.to, cut.from)).toBe(false);
+    // 而且落在词汇承诺的间距上（一块板约一屏，板间隔 2000~3000）。
+    expect(cut.to.x - (cut.from.x + cut.from.w)).toBeGreaterThanOrEqual(800);
+    expect(cut.to.x - (cut.from.x + cut.from.w)).toBeLessThanOrEqual(1400);
+  });
+
+  it("同一块板切两次，还在同一个地方", () => {
+    const cues = compile(tape(scene("B", 1000), line(SHORT, 1000), scene("A", 1000), line(SHORT, 1000), scene("B", 1000))).cues;
+    const [first, second] = cues.filter((c) => c.op.kind === "transition" && c.op.to === "B");
+    expect(second.to).toEqual(first.to);
+  });
+
+  it("recall 到新板上说 here，落在这块板此刻的框里", () => {
+    const show = compile(tape(art("旧东西"), line(SHORT, 1000), scene("B", 1000), {
+      kind: "recall",
+      id: "旧东西",
+      box: { x: 0, y: 0, w: 200, h: 200 },
+      here: true,
+    } as RecallOp));
+    const rev = show.props.get("旧东西")!.revisions[1];
+    const onB = show.cues.find((c) => c.op.kind === "transition")!;
+    expect(rev.scene).toBe("B");
+    expect(contains(onB.to, rev.box)).toBe(true);
+  });
+
+  it("命名了另一块板的 here，落在那块板的地皮上，不是叠在眼前这块板上", () => {
+    const show = compile(tape(scene("B", 1000), line(SHORT, 1000), unnamed("别处的东西", "A"), scene("A", 1000)));
+    const boxOf = [...show.props.values()][0].revisions[0].box;
+    const cut = show.cues.find((c) => c.op.kind === "transition" && c.op.to === "A")!;
+    // 它得在 B 的框外面——否则两块板堆在同一块平面上，随后那一刀把堆一起框进来。
+    const standingOnB = show.cues.find((c) => c.op.kind === "transition" && c.op.to === "B")!;
+    expect(contains(standingOnB.to, boxOf)).toBe(false);
+    expect(contains(cut.to, boxOf)).toBe(true);
+  });
+});
+
+/** 一个节拍里说“往右一屏，把新概念放在那儿”：东西要落在新框里。 */
+describe("compile：here 落在这一拍说完时镜头看见的地方", () => {
+  it("占位符先上、镜头后走，东西跟着走后的框，而不是走之前的", () => {
+    const show = compile(tape(line("开场", 1000), unnamed("新概念"), slide("right", 1), line(SHORT, 1000)));
+    const move = show.cues.find((c) => c.op.kind === "camera")!;
+    const boxOf = [...show.props.values()][0].revisions[0].box;
+    const cx = boxOf.x + boxOf.w / 2;
+    const cy = boxOf.y + boxOf.h / 2;
+    expect(cx).toBeGreaterThan(move.to.x);
+    expect(cx).toBeLessThan(move.to.x + move.to.w);
+    expect(cy).toBeGreaterThan(move.to.y);
+    expect(cy).toBeLessThan(move.to.y + move.to.h);
+  });
+
+  it("同一帧里的第二个 here 让开一点，不正好压在第一个上", () => {
+    const show = compile(tape(unnamed("一"), unnamed("二")));
+    const [a, b] = [...show.props.values()].map((p) => p.revisions[0].box);
+    expect(a.x).not.toBe(b.x);
   });
 });

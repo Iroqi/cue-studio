@@ -1,3 +1,4 @@
+import { guardOp } from "./guard";
 import type { OpEntry, Op, TrackId } from "./types";
 
 export const MAIN_TRACK: TrackId = "main";
@@ -7,12 +8,18 @@ export class OpLog {
   private seq = 0;
   private turn = 0;
 
+  /**
+   * The single gate every op passes through, whether it came from a director tool call or from a
+   * recording somebody else shared. The interpreter's arithmetic — the clock, the camera, the ink
+   * measure — assumes finite numbers and short strings; that assumption is enforced here rather than
+   * left to whichever caller happens to have validated its input.
+   */
   append(ops: Op[], track: TrackId): OpEntry[] {
     const added = ops.map((op) => ({
       seq: this.seq++,
       track,
       turn: this.turn,
-      op,
+      op: guardOp(op),
     }));
     this.entries.push(...added);
     return added;
@@ -71,9 +78,17 @@ export class OpLog {
     this.turn = 0;
   }
 
-  /** A saved log is a recording: restoring it replays the lesson with no model involved. */
+  /**
+   * A saved log is a recording: restoring it replays the lesson with no model involved. Which also
+   * makes it the one path where the input is entirely somebody else's bytes — a `#s=` fragment from
+   * a stranger — so the same gate applies here. Nothing is rejected: an unreadable field is defaulted
+   * and the rest of the show plays.
+   */
   restore(entries: OpEntry[]) {
-    this.entries = entries.slice().sort((a, b) => a.seq - b.seq);
+    this.entries = entries
+      .filter((e) => e && typeof e.seq === "number" && !!e.op)
+      .map((e) => ({ ...e, op: guardOp(e.op) }))
+      .sort((a, b) => a.seq - b.seq);
     this.seq = this.entries.reduce((m, e) => Math.max(m, e.seq + 1), 0);
     this.turn = this.entries.reduce((m, e) => Math.max(m, e.turn), 0);
   }

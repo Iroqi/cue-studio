@@ -264,6 +264,7 @@ button.x {
 .prop {
   position: absolute;
   color: var(--fg);
+  transition: opacity 260ms ease;
 }
 
 /* a 3-D window on the board: the WebGL canvas fills the prop's box and reads as an inset viewport */
@@ -297,8 +298,13 @@ button.x {
   filter: drop-shadow(0 0 10px var(--am));
 }
 
-.dim-rest:has(~ .prop) {
-  opacity: 1;
+/*
+ * dim-rest: the named prop keeps its light and everything else on the board steps back. The class
+ * lives on `.world` (StageView marks it there) because the dimming is a statement about the *rest*
+ * of the board — doing it per prop would need every other prop id in the selector.
+ */
+.world.dim-rest .prop:not(.hl-dim-rest) {
+  opacity: 0.22;
 }
 
 @keyframes pulse {
