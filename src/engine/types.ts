@@ -66,7 +66,8 @@ export interface Scene3DSpec {
 export interface BuildOp {
   kind: "build";
   id: string;
-  scene: string;
+  /** Which board this belongs to. Left out, it lands on the board the show is standing in. */
+  scene?: string;
   box: Box;
   /** Asked for no coordinates: the interpreter centres it in whatever the camera sees (box x/y are placeholders then). */
   here?: boolean;
@@ -105,7 +106,8 @@ export interface LinkOp {
 export interface RecallOp {
   kind: "recall";
   id: string;
-  scene: string;
+  /** The board to bring it onto; the one being stood in when this is left out. */
+  scene?: string;
   box: Box;
   /** Same rule as build: no coordinates given, so land it inside the current frame. */
   here?: boolean;
@@ -222,6 +224,9 @@ export interface OpEntry {
 
 export interface Revision {
   t: number;
+  /** Which board this revision was laid down on. The prop's `scene` is where it ended up; this is where
+   * it was at this moment — so a recall into a later scene cannot erase the prop from the scene before it. */
+  scene: string;
   box: Box;
   svg?: string;
   html?: string;

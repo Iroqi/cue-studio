@@ -1,12 +1,12 @@
 import type { Stage } from "./runtime";
+import { speechMs } from "./speech";
 
 const KEY = "canvas-teacher.voice";
-/** Rough Mandarin speaking rate at rate=1, used only to decide how hard to squeeze the voice. */
-const CHARS_PER_SEC = 5.2;
 
 /**
- * Voice-over that is glued to the clock, never in front of it: a beat is as long as the director
- * declared, so the utterance is stretched or squeezed to fit inside the stage time it was given.
+ * Voice-over that is glued to the clock, never in front of it. The clock already refuses to be shorter
+ * than the line it carries (`cueMs` floors every narrated beat at what it takes to say it), so the
+ * usual rate here is 1.0 — the squeeze is left for the rare beat the director stretched on purpose.
  * Nothing here feeds back into timing — mute it and the show is identical.
  */
 export class Narrator {
@@ -69,8 +69,10 @@ export class Narrator {
       if (this.voice) u.voice = this.voice;
       u.lang = this.voice?.lang ?? "zh-CN";
       const room = n.duration / 1000;
-      const needs = Math.max(n.text.length, 1) / CHARS_PER_SEC;
-      u.rate = Math.min(1.6, Math.max(0.8, needs / Math.max(room, 0.4)));
+      const needs = speechMs(n.text) / 1000;
+      // The clock floors every beat at this same estimate, so the ratio is at most 1: the voice only
+      // ever slows down to share a long beat, never rushes to finish before a cut.
+      u.rate = Math.max(0.8, needs / Math.max(room, 0.4));
       speechSynthesis.speak(u);
       return;
     }

@@ -35,6 +35,12 @@ const ART_R = arrow(30, 540, 930, 40, 960, 580, "#fde68a", "a + b", 12);
 const ART_X = arrow(30, 90, 930, 90, 960, 180, "#94a3b8", "rₓ");
 const ART_Y = arrow(30, 540, 30, 40, 180, 580, "#94a3b8", "rᵧ");
 
+/** The conclusion, typeset: this is what `class="tex"` buys over hand-stacked glyphs. */
+const ART_LAW = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 320">
+<line x1="24" y1="296" x2="876" y2="296" stroke="#fde68a" stroke-width="3" stroke-opacity=".35"/>
+<text class="tex" x="30" y="110" font-size="64" fill="#fde68a">\\vec{r}=\\vec{a}+\\vec{b}=\\begin{pmatrix}a_x+b_x\\\\a_y+b_y\\end{pmatrix}</text>
+</svg>`;
+
 export function asideScore() {
   return [
     fauxAssistantMessage(
@@ -177,6 +183,9 @@ export function rehearsalScore() {
       [
         fauxToolCall("highlight", { target: "vec-r", style: "outline", seconds: 2 }),
         fauxToolCall("narrate", { text: "分解不是把一条向量拆碎，\n是换一组你能算的方向，重新走同一条路。", seconds: 8, style: "verse" }),
+        fauxToolCall("build", { id: "law-sum", scene: "分解", label: "加法的坐标写法", x: 2560, y: 900, w: 900, h: 320, note: "结论用真排版落在板上", svg: ART_LAW }),
+        fauxToolCall("camera", { mode: "fit", target: ["law-sum"], duration: 1200 }),
+        fauxToolCall("narrate", { text: "写成一行就是这条法则：分量各自相加。", seconds: 6 }),
         fauxToolCall("note_progress", { concepts_covered: ["向量加法的三角形法则", "分量只依赖终点"], beats_advanced: 6 }),
       ],
       { stopReason: "toolUse" },

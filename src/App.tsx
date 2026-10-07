@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { Stage } from "./engine/runtime";
 import { Narrator } from "./engine/narrator";
 import { decodeTape, encodeTape } from "./engine/share";
@@ -89,6 +89,28 @@ export default function App() {
   const [more, setMore] = useState(false);
   const [lines, setLines] = useState<{ beat: number; text: string }[]>([]);
   const teacherRef = useRef<Teacher | null>(null);
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  /** The band the camera has to clear — whatever the dock actually measures, never a guessed constant. */
+  const [dockH, setDockH] = useState(150);
+  const [railOpen, setRailOpen] = useState(true);
+
+  useLayoutEffect(() => {
+    const el = dockRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setDockH(el.offsetHeight));
+    ro.observe(el);
+    setDockH(el.offsetHeight);
+    return () => ro.disconnect();
+  }, []);
+
+  // The observer sees every layout change, but it is delivered on the frame lifecycle: a tab that gets
+  // no frames keeps reserving the band from the number measured at mount, and the beat rail grows the
+  // dock the moment the first beats land. Re-read when the dock's own content changes — the same number
+  // is a no-op, so this costs no re-render, and it never runs on the clock's own frame.
+  useEffect(() => {
+    const el = dockRef.current;
+    if (el) setDockH((h) => (el.offsetHeight === h ? h : el.offsetHeight));
+  }, [railOpen, snap.duration]);
 
   const teacher = () => {
     if (!teacherRef.current) {
@@ -178,14 +200,17 @@ export default function App() {
     if (!q) return;
     const t = teacher();
     const onto = t.continuesBoard();
+    // Words during the cold start are not an interruption — there is nothing to interrupt yet. They are
+    // held and become the next continuation, so the rehearsal deck must load the continuation score.
+    const hold = !onto && stage.compiled.duration === 0;
     setEntry("");
     if (cfg.scripted) {
       getModels(cfg);
-      setScriptedResponses(onto ? continuationScore() : asideScore());
+      setScriptedResponses(onto || hold ? continuationScore() : asideScore());
     }
     // A tape someone else played has no live tail: stand at its end, then keep drawing from there.
     if (onto && !stage.live) stage.goLive();
-    setStatus(onto ? "接着这块板往下讲…" : "学习者打断…");
+    setStatus(hold ? "这句话记下了 —— 这一排落定就接上你的。" : onto ? "接着这块板往下讲…" : "学习者打断…");
     await t.respond(q);
   };
 
@@ -228,15 +253,23 @@ export default function App() {
   const gate = snap.gate;  const isQuiz = gate?.kind === "quiz";
   const liveTail = snap.live && snap.playing;
   const onto = !speaking;
-  // Which way the next sentence goes, so the button says what pressing it will do: while a question
-  // is on stage his words answer it; while the director works they cut in; once it stops they go
-  // onto the same board.
-  const intent = gate ? "answer" : onto ? "continue" : "aside";
+  // A question can be queued while the clock is still walking up to its card; the turn is blocked on it
+  // either way, so his words are an answer either way.
+  const awaiting = snap.askedGate != null;
+  // A lesson is underway once the board has anything on it *or* the director is already working. This
+  // must not be judged by `duration` alone: during the cold start the board is still empty while a turn
+  // is in flight, and opening again there would reset the stage and drop the director mid-sentence.
+  const started = snap.duration > 0 || speaking;
+  // Which way the next sentence goes, so the button says what pressing it will do: before anything is on
+  // the board the first sentence opens the lesson; while a question is on stage his words answer it;
+  // while the director is laying the first beats there is no board to cut into yet, so they are held for
+  // the end of this turn; once the turn is over they go onto the same board.
+  const intent = gate || awaiting ? "answer" : !started ? "open" : onto ? "continue" : snap.duration === 0 ? "queue" : "aside";
 
   return (
-    <div className={"app" + (drawer ? " open" : "")}>
+    <div className={"app" + (drawer ? " open" : "")} style={{ "--dock": `${dockH}px` } as CSSProperties}>
       <main>
-        <StageView stage={stage} />
+        <StageView stage={stage} bottomInset={dockH} />
         <input
           className="timeline"
           type="range"
@@ -367,39 +400,50 @@ export default function App() {
         )}
         {verdict && <div className={"verdict" + (verdict.ok ? " ok" : " miss")}>{verdict.text}</div>}
 
-        <div className="console">
-          <BeatRail stage={stage} teacher={teacherRef.current} t={snap.t} duration={snap.duration} />
-          <div className="composer">
-            <input
-              value={entry}
-              onChange={(e) => setEntry(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && (snap.duration > 0 ? void speak() : void start())}
-              placeholder={
-                snap.duration === 0
-                  ? "给一个题目：向量加法 / 梯度下降 / 复数乘法…"
-                  : intent === "answer"
+        <div className="console" ref={dockRef}>
+          <div className="console-inner">
+            {railOpen && <BeatRail stage={stage} teacher={teacherRef.current} t={snap.t} duration={snap.duration} />}
+            <div className="composer">
+              <input
+                value={entry}
+                onChange={(e) => setEntry(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && (started ? void speak() : void start())}
+                placeholder={
+                  intent === "answer"
                     ? "不选也行 —— 直接说你怎么想的，这就当作对那个问题的回答…"
-                    : intent === "continue"
-                      ? "接着这块板说：往下讲、问为什么、说哪儿没懂…"
-                      : "打断演出，问它一件事…"
-              }
-            />
-            <button className="go" onClick={() => (snap.duration > 0 ? void speak() : void start())}>
-              {snap.duration === 0 ? "开场" : intent === "answer" ? "回答" : intent === "continue" ? "接着说" : "打断"}
-            </button>
-            <button
-              onClick={() => {
-                history.replaceState(null, "", location.pathname + location.search);
-                stage.reset();
-                dropTeacher();
-                setEntry("");
-                setStatus("舞台清空。");
-              }}
-            >
-              重来
-            </button>
+                    : intent === "open"
+                      ? "给一个题目：向量加法 / 梯度下降 / 复数乘法…"
+                      : intent === "queue"
+                        ? "导演在排第一拍。先说的话不会掉，这一排落定就接上："
+                        : intent === "continue"
+                          ? "接着这块板说：往下讲、问为什么、说哪儿没懂…"
+                          : "打断演出，问它一件事…"
+                }
+              />
+              <button className="go" onClick={() => (started ? void speak() : void start())}>
+                {intent === "answer" ? "回答" : intent === "open" ? "开场" : intent === "queue" ? "等一下说" : intent === "continue" ? "接着说" : "打断"}
+              </button>
+              <button
+                onClick={() => {
+                  history.replaceState(null, "", location.pathname + location.search);
+                  stage.reset();
+                  dropTeacher();
+                  setEntry("");
+                  setStatus("舞台清空。");
+                }}
+              >
+                重来
+              </button>
+              <button
+                className="fold"
+                onClick={() => setRailOpen((o) => !o)}
+                title={railOpen ? "收起节拍条，把这一条画布还给画面" : "展开节拍条：每一拍都能倒回重演"}
+              >
+                {railOpen ? "收起" : "节拍"}
+              </button>
+            </div>
+            <div className="status">{status}</div>
           </div>
-          <div className="status">{status}</div>
         </div>
       </main>
 

@@ -2,6 +2,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Tool } from "@earendil-works/pi-ai";
 import type { Box, MotionMode, NarrateOp, Op, Prim3, Scene3DSpec, Vec3 } from "../engine/types";
 import type { Stage } from "../engine/runtime";
+import { cueMs } from "../engine/compile";
 
 const MOTION_MODES = new Set(["oscillate", "approach", "orbit", "iterate", "flow"]);
 
@@ -22,6 +23,18 @@ const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFin
 /** Exactly three finite numbers, else no vector — a half-filled pos is worse than none (interpreter falls back to origin). */
 const VEC3 = (v: unknown): Vec3 | undefined =>
   Array.isArray(v) && v.length === 3 && v.every(isNum) ? [v[0], v[1], v[2]] : undefined;
+
+/**
+ * A "sky" as dark as the board is a painter sneaking a second board in through the 3-D window: the
+ * stage is already the backdrop, so the field is dropped and the board shows through the glass.
+ */
+function isBoardDark(hex: string): boolean {
+  const h = hex.slice(1);
+  const s = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(s.slice(i, i + 2), 16));
+  if (![r, g, b].every((v) => Number.isFinite(v))) return false;
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.16;
+}
 
 /**
  * Coerce whatever the director emitted into a Scene3DSpec. This is untrusted model output rendered by
@@ -81,7 +94,7 @@ export function scene3(v: unknown): Scene3DSpec | undefined {
   if (o.interactive === true) spec.interactive = true;
   if (o.grid === true) spec.grid = true;
   if (o.axes === true) spec.axes = true;
-  if (typeof o.background === "string" && /^#[0-9a-fA-F]{3,8}$/.test(o.background)) spec.background = o.background;
+  if (typeof o.background === "string" && /^#[0-9a-fA-F]{3,8}$/.test(o.background) && !isBoardDark(o.background)) spec.background = o.background;
   return spec;
 }
 
@@ -198,7 +211,10 @@ export function directorTools(
             ops.push({
               kind: "build",
               id: S(p.id),
-              scene: S(p.scene, S(beat.scene, "scene-1")),
+              // No name, no scene: the engine puts it on the board the show is standing in. Inventing
+              // a name here would be the tool deciding where the lesson is, and a prop on a board the
+              // show never walked onto is a prop nobody sees.
+              scene: S(p.scene, S(beat.scene)) || undefined,
               label: S(p.label, S(p.id)),
               note: p.note ? S(p.note) : undefined,
               box: B(p),
@@ -211,14 +227,14 @@ export function directorTools(
           if (beat.hold) ops.push({ kind: "beat", duration: N(beat.hold, 600) });
         }
         const narr = ops.filter((o) => o.kind === "narrate") as NarrateOp[];
-        const secs = narr.reduce((a, o) => a + o.duration, 0) / 1000;
-        return { ops, result: `skeleton scheduled: ${narr.length} narrated beats, ~${secs.toFixed(0)}s of stage time. Each prop is an empty frame until paint() fills it — and the clock stops at a framed empty one while a paint is running.` };
+        const secs = narr.reduce((a, o) => a + cueMs(o), 0) / 1000;
+        return { ops, result: `skeleton scheduled: ${narr.length} narrated beats, ~${secs.toFixed(0)}s of stage time. Each prop is an empty frame until paint() fills it — and the clock parks at the edge of the beat whose frame is still empty, so paint them in beat order.` };
       }
       case "build":
         ops.push({
           kind: "build",
           id: S(args.id),
-          scene: S(args.scene, "scene-1"),
+          scene: S(args.scene) || undefined,
           label: S(args.label, S(args.id)),
           note: args.note ? S(args.note) : undefined,
           here: HERE(args),
@@ -275,9 +291,13 @@ export function directorTools(
       case "camera":
         ops.push(CAM(args));
         return { ops, result: `camera ${S(args.mode)} over ${N(args.duration, 900)}ms` };
-      case "narrate":
-        ops.push({ kind: "narrate", text: S(args.text), duration: N(args.seconds, 6) * 1000, style: args.style ? (S(args.style) as NarrateOp["style"]) : undefined });
-        return { ops, result: `narrated ${S(args.text).length} chars` };
+      case "narrate": {
+        const line: NarrateOp = { kind: "narrate", text: S(args.text), duration: N(args.seconds, 6) * 1000, style: args.style ? (S(args.style) as NarrateOp["style"]) : undefined };
+        ops.push(line);
+        const got = cueMs(line) / 1000;
+        const rushed = got > line.duration / 1000 + 0.05;
+        return { ops, result: `narrated ${line.text.length} chars — this beat runs ${got.toFixed(1)}s${rushed ? " (longer than you asked: the clock will not rush a sentence, and the cut after it waits for the voice)" : ""}` };
+      }
       case "beat":
         ops.push({ kind: "beat", duration: N(args.seconds, 1) * 1000 });
         return { ops, result: `silence ${N(args.seconds, 1)}s` };
@@ -326,18 +346,18 @@ export function directorTools(
     {
       name: "stage_script",
       description:
-        "Lay the skeleton first, in one call: beats of narration with prop placeholders (id, label, box) and camera moves. The clock starts running, but it stands still while a paint() is in flight and the camera is looking at a frame that has no artwork yet — a caption can never finish before the thing it describes exists. So paint each placeholder before the narration reaches it: one nobody paints stays an empty frame. Call this at the start of every scene.",
+        "Lay the skeleton first, in one call: beats of narration with prop placeholders (id, label, box) and camera moves. The clock starts running, but it parks at the edge of a beat whose artwork has not landed — a picture still streaming in does not count as landed, so the line about it cannot start ahead of the thing it describes. Paint each placeholder before the narration reaches it; one nobody paints stays an empty frame until your turn ends and the caption plays over it. Call this at the start of every scene.",
       parameters: Type.Object({
         title: str("what this scene teaches"),
         beats: Type.Array(
           Type.Object({
             scene: Type.Optional(str("scene name; props placed here belong to it")),
             say: str("the narration line spoken during this beat"),
-            seconds: num("how long this beat lasts"),
+            seconds: num("seconds this beat lasts — a floor, not a cap: a line you cannot say in this time makes the beat longer, never the voice faster"),
             style: Type.Optional(
               Type.Enum({ caption: "caption", verse: "verse", voice: "voice" }, { description: "how the line shows: caption types along the bottom, verse stages the line as a big centre-frame statement, voice speaks it without putting text on the board" }),
             ),
-            hold: Type.Optional(num("extra silence after the line, seconds")),
+            hold: Type.Optional(num("extra silence after the line, milliseconds, default 600")),
             props: Type.Optional(
               Type.Array(
                 Type.Object({
@@ -357,7 +377,7 @@ export function directorTools(
                 screens: Type.Optional(num("for pan: fraction of the frame to slide, default 0.8")),
                 at: Type.Optional(Type.Object({ x: num("0..1 across the target's box"), y: num("0..1 down the target's box") }, { description: "close-up on a part of the target, e.g. an arrowhead" })),
                 span: Type.Optional(num("close-up coverage of the target's longest side, default 0.45")),
-                duration: Type.Optional(num("move seconds")),
+                duration: Type.Optional(num("move length, milliseconds, default 900")),
                 easing: Type.Optional(str("linear|ease|ease-in|ease-out|spring")),
               }),
             ),
@@ -369,12 +389,12 @@ export function directorTools(
       name: "build",
       description:
         "Place a prop on the backstage plane with finished artwork. Omit x/y and it is put in the middle of whatever the camera currently sees — say where it goes only when you mean a specific corner of the plane. For anything with more than a few shapes prefer stage_script + draw so the clock is not blocked. Pass svg/html/css for a flat drawing, or scene3d to open a live 3-D window on the board (only when the idea is genuinely three-dimensional).",
-      parameters: Type.Object({ id: str("stable id"), scene: str("scene name"), label: str("one line: what this object IS"), ...boxPlaced, note: Type.Optional(str("teaching role")), svg: Type.Optional(str("inline <svg> markup, viewBox fitted to w/h")), html: Type.Optional(str("HTML/CSS markup")), css: Type.Optional(str("CSS scoped to this prop")), scene3d: Type.Optional(SCENE3D_T) }),
+      parameters: Type.Object({ id: str("stable id"), scene: Type.Optional(str("which board this belongs to; leave it out to keep the prop on the board the show is standing in")), label: str("one line: what this object IS"), ...boxPlaced, note: Type.Optional(str("teaching role")), svg: Type.Optional(str('inline <svg> markup, viewBox fitted to w/h; a <text class="tex"> holding LaTeX is typeset by the stage')), html: Type.Optional(str("HTML/CSS markup")), css: Type.Optional(str("CSS scoped to this prop")), scene3d: Type.Optional(SCENE3D_T) }),
     },
     {
       name: "draw",
       description: "Replace the artwork of an existing prop while keeping its identity, position and history. The partial markup streams onto the stage as you emit it, so draw the important strokes first. Pass svg/html to redraw flat art, or scene3d to give it (or swap) a 3-D window.",
-      parameters: Type.Object({ id: str("prop id"), svg: Type.Optional(str("inline <svg>")), html: Type.Optional(str("HTML")), css: Type.Optional(str("scoped CSS")), scene3d: Type.Optional(SCENE3D_T) }),
+      parameters: Type.Object({ id: str("prop id"), svg: Type.Optional(str('inline <svg>; a <text class="tex"> holding LaTeX is typeset as a real formula by the stage — a hand-written <foreignObject> is dropped as foreign markup')), html: Type.Optional(str("HTML")), css: Type.Optional(str("scoped CSS")), scene3d: Type.Optional(SCENE3D_T) }),
     },
     { name: "move", description: "Change a prop's position or size on the plane (keeps artwork).", parameters: Type.Object({ id: str("prop id"), ...box }) },
     { name: "discard", description: "Take a prop off the stage. It stays in the log and can be recalled.", parameters: Type.Object({ id: str("prop id") }) },
@@ -394,7 +414,7 @@ export function directorTools(
         target: Type.Optional(Type.Array(str("prop or scene ids"))),
         region: Type.Optional(Type.Object(box, { description: "explicit rect to frame instead of ids" })),
         center: Type.Optional(Type.Object({ x: num("world x"), y: num("world y") }, { description: "for pan" })),
-        zoom: Type.Optional(num("for zoom: absolute scale, 1 = the 1600x900 default frame; ~6x is as far in as text stays readable, so it stops there")),
+        zoom: Type.Optional(num("for zoom: absolute scale, 1 = the 1600x900 default frame; about 3.5x is as far in as text stays readable, so the board stops there")),
         follow: Type.Optional(str("prop id to keep centred, for track")),
         dir: Type.Optional(Type.Enum({ left: "left", right: "right", up: "up", down: "down" }, { description: "for pan without coordinates: slide the frame this way" })),
         screens: Type.Optional(num("for pan+dir: how far to slide, in fractions of the current frame, default 0.8")),
@@ -404,12 +424,12 @@ export function directorTools(
             { description: "close-up on a PART of the target instead of the whole of it: the arrowhead is at x=1 for a rightward arrow, the joint where two vectors meet is their shared corner" },
           ),
         ),
-        span: Type.Optional(num("how much of the target's longest side the close-up covers, 0.05..1, default 0.45; the frame never closes in past 260 world units of width, so a tiny prop gets a margin instead of a blow-up")),
+        span: Type.Optional(num("how much of the target's longest side the close-up covers, 0.05..1, default 0.45; no camera closes in past 450 world units of frame width (~3.5x), in any mode, so a tiny prop gets a margin instead of a blow-up")),
         duration: Type.Optional(num("ms, default 900")),
         easing: Type.Optional(str("linear|ease|ease-in|ease-out|spring")),
       }),
     },
-    { name: "narrate", description: "Voice-over for a stretch of stage time. Narration is the clock: everything else runs on top of it. Pick how the line shows — caption types along the bottom, verse stages it as a statement in the middle of the board, voice says it and leaves the picture alone.", parameters: Type.Object({ text: str("the line, in the teacher's voice, no stage directions"), seconds: num("duration of this beat"), style: Type.Optional(Type.Enum({ caption: "caption", verse: "verse", voice: "voice" }, { description: "default caption; verse for the one line you want staged, voice when the board already carries the idea and the ear should not be shown text" })) }), },
+    { name: "narrate", description: "Voice-over for a stretch of stage time. Narration is the clock: everything else runs on top of it. Pick how the line shows — caption types along the bottom, verse stages it as a statement in the middle of the board, voice says it and leaves the picture alone.", parameters: Type.Object({ text: str("the line, in the teacher's voice, no stage directions"), seconds: num("duration of this beat — a floor: say the line at a normal pace and if it does not fit, the beat grows instead of the voice"), style: Type.Optional(Type.Enum({ caption: "caption", verse: "verse", voice: "voice" }, { description: "default caption; verse for the one line you want staged, voice when the board already carries the idea and the ear should not be shown text" })) }), },
     { name: "beat", description: "Deliberate silence so a visual lands. Nothing moves.", parameters: Type.Object({ seconds: num("hold duration") }) },
     { name: "transition", description: "Move between scenes with a visible figure. The camera travels to the destination scene's bounds while the veil runs. Props you recalled appear on both sides of it.", parameters: Type.Object({ style: Type.Enum({ dissolve: "dissolve", wipe: "wipe", "match-cut": "match-cut", split: "split" }), to: str("destination scene name"), seconds: Type.Optional(num("default 1.2")) }) },
     { name: "highlight", description: "Draw attention without moving anything: pulse, outline, dim-rest, shake.", parameters: Type.Object({ target: str("prop id"), style: Type.Enum({ pulse: "pulse", outline: "outline", "dim-rest": "dim-rest", shake: "shake" }), seconds: Type.Optional(num("default 1.5")) }) },

@@ -68,9 +68,17 @@
 
 代价：板上的东西不会自己跑逻辑。收益：日志可信、可重放、可分享，且不用担心任意代码执行。
 
+## 公式是排版的，不是手画的
+
+道具 markup 里任何带 `class="tex"` 的元素，它的文本内容会被 KaTeX 排成 **MathML**，浏览器自己完成排版。契约就一条：给一个 `<text>` 挂上 `class="tex"`，内容写 LaTeX（`<text class="tex" x="40" y="90" font-size="48" fill="#fde68a">\vec r=\vec a+\vec b</text>`）—— `y` 是基线，窗口的位置和宽高由舞台算。模型自己写的 `<foreignObject>` 不算入口：DOMPurify 把它列进 svg 禁用表（那是 mutation-XSS 的门），净化器会把这扇窗连同里面的公式一起删掉，所以只有 `class="tex"` 这一条路。
+
+只取 `output: 'mathml'`：不引 KaTeX 的 CSS，不搬它的 woff2，不改写任何 `url()`。日志里存的仍是那串 LaTeX 源码 —— 所以公式进得了分享链接、重放和重排，而且它跟着画面一起被特写放大，和一条笔画同样缩放。
+
+代价：MathML 的渲染细节由浏览器决定（Chrome/Safari/Firefox 原生，旧浏览器会退化成一行普通文本）。这是换来的：真分数、根号、下标、矩阵，零样式注入。
+
 ## 哪些轮子是借的，哪些是自己造的
 
-借的：`@earendil-works/pi-ai`（模型传输、流式、凭据、faux provider）、`three`（3D 图形栈）、浏览器自己的 SVG/HTML/CSS 引擎（2D 表达面就是标准 DOM，没有再包一层）、`speechSynthesis`（配音）、MathML（数学排版，Chrome/Safari/Firefox 原生渲染，`<foreignObject>` 里已量过分数能正常上下堆叠 —— 所以接 KaTeX 只需要 `output: 'mathml'` 的字符串，不用注 CSS、不用搬 woff2）。
+借的：`@earendil-works/pi-ai`（模型传输、流式、凭据、faux provider）、`three`（3D 图形栈）、浏览器自己的 SVG/HTML/CSS 引擎（2D 表达面就是标准 DOM，没有再包一层）、`speechSynthesis`（配音）、`katex`（只做 LaTeX→MathML 的字符串转换，排版交给浏览器，见上）。
 
 自己造的只有三样，且都有理由：**op 日志 + 解释器**（没有任何库把"只增不删的指令带"当唯一真相，从而让分享、重放、重排都是副产品）；**时钟归旁白**（GSAP / Motion Canvas 这类 tween 库要夺走时间的所有权，而这里 `t` 必须是纯函数，倒带和分享才可能字节一致）；**二维板 + 摄影机**（Pixi/Konva 这类保留模式画布吃的是解析好的图元，接不住"模型边吐 markup 边长出来"的磁带头，也没有 shadow root 的作用域隔离）。
 
@@ -111,7 +119,7 @@ npm run lint           # oxlint
 ## 目录
 
 ```
-src/engine/   日志、解释器、编译、相机、运动、旁白时钟、分享、3D 解释器、舞台渲染
+src/engine/   日志、解释器、编译、相机、运动、旁白时钟、分享、3D 解释器、公式排版、舞台渲染
 src/agent/    主循环、上下文预算、提示词、学习者档案、排练谱子
 src/tools/    导演工具面（动词 schema + 入参白名单）
 src/llm/      传输适配（两种 api 形状、凭据存储、限流退避）

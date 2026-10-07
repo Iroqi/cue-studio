@@ -15,15 +15,18 @@ import type {
   Revision,
   TransitionOp,
 } from "./types";
+import { inkBox } from "./ink";
+import { speechMs } from "./speech";
 
 export const VIEWPORT: Box = { x: 0, y: 0, w: 1600, h: 900 };
 
 /**
  * How close a close-up may get, in world units of frame width. A painter's smallest text is 28 units
- * tall, and at this frame width it is magnified about six times — still a word. Push in further and a
- * label becomes a shape and a stroke becomes a wall, which is what made close-ups look blown up.
+ * tall; at 450 units of frame the board pushes in 3.5x, so that text lands around 90-100 px — a big
+ * word, still a word. The old floor of 260 meant 6x and ~155 px: a label stopped being a word and a
+ * stroke became a wall, which is what made close-ups look blown up.
  */
-const MIN_CLOSEUP_W = 260;
+const MIN_CLOSEUP_W = 450;
 
 export function unionBox(boxes: Box[]): Box {
   if (boxes.length === 0) return { ...VIEWPORT };
@@ -53,25 +56,51 @@ function fitRect(rect: Box, aspect: number): Box {
   return { x: rect.x - (rect.h * aspect - rect.w) / 2, y: rect.y, w: rect.h * aspect, h: rect.h };
 }
 
+/**
+ * One ceiling on how far the eye may push in, applied to every camera mode after it resolves. `focus`
+ * and a single-prop `fit` used to have none, so a small prop could be blown up arbitrarily while the
+ * two modes that did clamp stopped at 6x. Widening only ever pulls the frame back, never crops.
+ */
+function limitPushIn(rect: Box, aspect: number): Box {
+  if (rect.w >= MIN_CLOSEUP_W) return rect;
+  const c = centerOf(rect);
+  return { x: c.x - MIN_CLOSEUP_W / 2, y: c.y - MIN_CLOSEUP_W / aspect / 2, w: MIN_CLOSEUP_W, h: MIN_CLOSEUP_W / aspect };
+}
+
 function propBox(props: Map<string, Prop>, id: string): Box | undefined {
   const p = props.get(id);
-  if (!p || p.revisions.length === 0) return undefined;
-  return p.revisions[p.revisions.length - 1].box;
+  const rev = p?.revisions[p.revisions.length - 1];
+  if (!rev) return undefined;
+  // Aim at the ink, not at the frame the art was allowed to fill: a drawing that hugs one corner of its
+  // own canvas sits a fifth of a view off centre while the arithmetic says it is perfectly framed.
+  return inkBox(rev.svg, rev.box) ?? rev.box;
 }
 
 function sceneBox(props: Map<string, Prop>, scene: string): Box | undefined {
   const boxes = [...props.values()]
     .filter((p) => p.scene === scene && p.discardedAt === undefined)
-    .map((p) => p.revisions[p.revisions.length - 1]?.box)
+    .map((p) => propBox(props, p.id))
     .filter((b): b is Box => !!b);
   return boxes.length ? unionBox(boxes) : undefined;
 }
 
 /** Narration, transitions and beats own the clock; camera moves, highlights and motion run on top of them. */
-type TimeOwning = NarrateOp | TransitionOp | BeatOp;
+export type TimeOwning = NarrateOp | TransitionOp | BeatOp;
 
-function ownsTime(op: Op): op is TimeOwning {
+export function ownsTime(op: Op): op is TimeOwning {
   return op.kind === "narrate" || op.kind === "beat" || op.kind === "transition";
+}
+
+/**
+ * How long an op holds the frame. Every cut in the show is timed off this window, so the two floors
+ * here are what keep the picture from running ahead of its own narration: a line cannot be squeezed
+ * under the time it takes to say out loud, and a scene change cannot be shorter than the half of it
+ * the veil needs to cover the board — below that, the sweep of the old scene is an invisible jump cut.
+ */
+export function cueMs(op: Op): number {
+  if (op.kind === "narrate") return Math.max(op.duration, speechMs(op.text));
+  if (op.kind === "transition") return Math.max(op.duration, 700);
+  return Math.max("duration" in op ? op.duration : 0, 1);
 }
 
 export function compile(entries: OpEntry[]): Compiled {
@@ -83,6 +112,10 @@ export function compile(entries: OpEntry[]): Compiled {
   let openNext = false;
   let t = 0;
   let cursor: Box = { ...VIEWPORT };
+  // Which board the show is standing in, named by the last `transition`. A prop the director gives no
+  // scene for lands on this one, because "the board I am looking at" is what they meant by leaving it
+  // out — and a prop on some other board is not on it, which is what keeps a new scene clean.
+  let standing = "";
   let lastSeq = 0;
   let slotKey = "";
   let slotN = 0;
@@ -124,7 +157,7 @@ export function compile(entries: OpEntry[]): Compiled {
       // A close-up frames a part, not a bigger version of the whole: the point is given as a
       // fraction of the prop's own box because the director never knows where the artwork ends.
       const b = targets[0];
-      const side = Math.max(MIN_CLOSEUP_W, Math.max(b.w, b.h) * Math.min(1, Math.max(0.05, op.span ?? 0.45)));
+      const side = Math.max(b.w, b.h) * Math.min(1, Math.max(0.05, op.span ?? 0.45));
       rect = { x: b.x + b.w * frac(op.at.x) - side / 2, y: b.y + b.h * frac(op.at.y) - side / 2, w: side, h: side };
     } else if (op.mode === "focus" && targets.length === 1) rect = padded(targets[0], 1.5);
     if (op.mode === "pan" && op.dir) {
@@ -139,7 +172,7 @@ export function compile(entries: OpEntry[]): Compiled {
     }
     if (op.mode === "zoom" && op.zoom) {
       const c = centerOf(cursor);
-      const w = Math.max(MIN_CLOSEUP_W, VIEWPORT.w / op.zoom);
+      const w = VIEWPORT.w / Math.max(op.zoom, 0.01);
       rect = { x: c.x - w / 2, y: c.y - (w / (cursor.w / cursor.h)) / 2, w, h: w / (cursor.w / cursor.h) };
     }
     if (op.mode === "track" && op.follow) {
@@ -147,7 +180,7 @@ export function compile(entries: OpEntry[]): Compiled {
       if (b) rect = { ...cursor, x: centerOf(b).x - cursor.w / 2, y: centerOf(b).y - cursor.h / 2 };
     }
     if (op.mode === "fit") rect = padded(rect, 1.2);
-    return fitRect(rect, cursor.w / cursor.h);
+    return limitPushIn(fitRect(rect, cursor.w / cursor.h), cursor.w / cursor.h);
   };
 
   const ensureProp = (id: string, scene: string): Prop => {
@@ -184,12 +217,16 @@ export function compile(entries: OpEntry[]): Compiled {
     switch (op.kind) {
       case "build":
       case "patch": {
-        const p = ensureProp(op.id, op.scene ?? (props.get(op.id)?.scene ?? "default"));
+        const p = ensureProp(op.id, op.scene ?? (props.get(op.id)?.scene ?? (standing || "default")));
+        // Naming a board moves an established prop onto it, exactly as `recall` does: the name is the
+        // director saying where this object belongs now, and a prop left on the old board is invisible.
+        if (op.scene) p.scene = op.scene;
         const prev = p.revisions[p.revisions.length - 1];
         const fillingPlaceholder = op.kind === "patch" && prev?.partial;
         const box = op.kind === "build" ? framed((op as BuildOp).box, (op as BuildOp).here, cursor) : op.box ?? prev?.box ?? { ...VIEWPORT };
         const revision: Revision = {
           t: fillingPlaceholder ? prev.t : start,
+          scene: p.scene,
           box,
           svg: op.svg ?? (op.kind === "patch" ? prev?.svg : undefined),
           html: op.html ?? (op.kind === "patch" ? prev?.html : undefined),
@@ -208,8 +245,8 @@ export function compile(entries: OpEntry[]): Compiled {
         const src = props.get(op.id);
         if (!src || src.revisions.length === 0) break;
         const prev = src.revisions[src.revisions.length - 1];
-        src.scene = op.scene;
-        src.revisions.push({ ...prev, t: start, box: framed((op as RecallOp).box, (op as RecallOp).here, cursor) });
+        src.scene = op.scene || standing || "default";
+        src.revisions.push({ ...prev, t: start, scene: src.scene, box: framed((op as RecallOp).box, (op as RecallOp).here, cursor) });
         src.discardedAt = undefined;
         break;
       }
@@ -227,7 +264,7 @@ export function compile(entries: OpEntry[]): Compiled {
       }
       case "camera": {
         const to = resolve(op);
-        cues.push({ t: start, end: start + Math.max(op.duration, 1), op, from: cursor, to });
+        cues.push({ t: start, end: start + cueMs(op), op, from: cursor, to });
         cursor = to;
         break;
       }
@@ -235,8 +272,9 @@ export function compile(entries: OpEntry[]): Compiled {
       case "narrate":
       case "highlight":
       case "motion": {
-        cues.push({ t: start, end: start + Math.max(op.duration, 1), op, from: cursor, to: cursor });
+        cues.push({ t: start, end: start + cueMs(op), op, from: cursor, to: cursor });
         if (op.kind === "transition") {
+          standing = op.to;
           const b = sceneBox(props, op.to);
           if (b) {
             const to = fitRect(padded(b, 1.2), cursor.w / cursor.h);
@@ -252,11 +290,11 @@ export function compile(entries: OpEntry[]): Compiled {
         break;
       }
       case "beat": {
-        cues.push({ t: start, end: start + Math.max(op.duration, 1), op, from: cursor, to: cursor });
+        cues.push({ t: start, end: start + cueMs(op), op, from: cursor, to: cursor });
         break;
       }
     }
-    if (ownsTime(op)) t = start + Math.max(op.duration, 1);
+    if (ownsTime(op)) t = start + cueMs(op);
     cur.end = Math.max(cur.end, t);
     openNext = speaks;
   }

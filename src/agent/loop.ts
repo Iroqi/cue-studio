@@ -25,6 +25,8 @@ const PAINT_TOOL: Tool = {
 const RATE_LIMIT = /429|rate.?limit|too many requests|速率限制|限流/i;
 const RETRIES = 3;
 const WAIT_MS = 12000;
+/** Painters run in parallel, but a free tier counts tokens per minute — a burst of six is a burst of 429s. */
+const PAINT_CONCURRENCY = 3;
 
 /** A reasoning model can spend its whole output budget on thinking and stop mid-thought. Twice it gets told to commit to verbs. */
 const TRUNCATED_MAX = 2;
@@ -138,12 +140,13 @@ export class Teacher {
    * and re-performs the cut.
    */
   async respond(text: string) {
-    // A question is standing on the stage with the clock stopped for it: what the learner says next
-    // IS its answer. Handing it to the parked turn is also the only way to avoid a second director
-    // working on one transcript while the first is still waiting.
+    // The director is stopped on a question it has not heard the answer to: what the learner says next
+    // IS that answer, whether the clock has reached the card yet or is still running toward it.
+    // Handing it to the parked turn is also the only way to avoid a second director working on one
+    // transcript while the first is still waiting.
     if (this.parkedGate !== null) {
       this.ev.onStatus?.("把你的话当作对那个问题的回答。");
-      this.stage.answerGate(text);
+      this.stage.answerGate(text, this.parkedGate);
       return;
     }
     if (this.continuesBoard()) {
@@ -151,7 +154,32 @@ export class Teacher {
       if (this.stage.live && !this.stage.playing) this.stage.play();
       return;
     }
+    // Nothing has landed on the board yet — the cold start. An aside here would perform on an empty
+    // plane and compete with the turn still laying that plane down, so the words are held and said as
+    // soon as this turn lands. The board continues; it does not fork.
+    if (this.stage.compiled.duration === 0) {
+      this.queued.push(text);
+      this.ev.onStatus?.("记下了，这一拍排完就接着说你的。");
+      void this.drainQueue();
+      return;
+    }
     await this.interrupt(text);
+  }
+
+  /** Words thrown in before the board existed, in the order they came. */
+  private queued: string[] = [];
+  private draining = false;
+
+  /** One drain at a time, and it waits for the current turn rather than talking over it. */
+  private async drainQueue() {
+    if (this.draining) return;
+    this.draining = true;
+    try {
+      await this.whenIdle();
+      while (this.queued.length && !this.abort.signal.aborted) await this.say(this.queued.shift()!);
+    } finally {
+      this.draining = false;
+    }
   }
 
   /**
@@ -211,6 +239,10 @@ export class Teacher {
   private async spin(where: string, transcript: Message[] = this.messages, track = "main") {
     this.ensureLead();
     this.busy = true;
+    // The turn owns the art debt: while it runs, an empty frame on the tape is a frame still coming,
+    // and the clock parks at the edge of the beat that was promised it. When the turn ends the debt
+    // is called in — a frame the director walked away from shows nothing rather than freezing the show.
+    this.stage.setTurnOpen(true);
     this.ev.onBusy?.(true);
     let truncated = 0;
     try {
@@ -271,8 +303,7 @@ export class Teacher {
           return;
         }
         const calls = message.content.filter((c): c is ToolCall => c.type === "toolCall");
-        for (const call of calls) {
-          if (this.abort.signal.aborted) return;
+        const report = async (call: ToolCall) => {
           const out = await this.execute(call, track);
           transcript.push({
             role: "toolResult",
@@ -282,11 +313,32 @@ export class Teacher {
             isError: !!out.isError,
             timestamp: Date.now(),
           } as Message);
+        };
+        for (let i = 0; i < calls.length; i++) {
+          if (this.abort.signal.aborted) return;
+          // A run of paints is a run of independent delegations: one brief in, one drawing out, no
+          // ordering between them, and each fills the frame its beat already reserved — so they go out
+          // together and the clock stops waiting for them together. Anything else keeps its place in
+          // line: it either moves the clock or reads what a paint just made.
+          if (calls[i].name !== PAINT_TOOL.name) {
+            await report(calls[i]);
+            continue;
+          }
+          let end = i;
+          while (end < calls.length && calls[end].name === PAINT_TOOL.name) end++;
+          for (let at = i; at < end; at += PAINT_CONCURRENCY) {
+            const settled = await Promise.allSettled(calls.slice(at, Math.min(at + PAINT_CONCURRENCY, end)).map(report));
+            // One painter failing must not swallow its siblings' results; the error still surfaces, after.
+            const failed = settled.find((r) => r.status === "rejected");
+            if (failed && failed.status === "rejected") throw failed.reason;
+          }
+          i = end - 1;
         }
       }
       this.ev.onStatus?.("这一节先到这里（一拍讲不了更多）—— 接着说就往下演。");
     } finally {
       this.busy = false;
+      this.stage.setTurnOpen(false);
       this.ev.onBusy?.(false);
       for (const wake of this.idleWaiters.splice(0)) wake();
     }
@@ -378,7 +430,9 @@ export class Teacher {
     if (call.name === "paint") {
       const id = String(args.id);
       const brief = String(args.brief ?? "");
-      const scene = this.stage.compiled.props.get(id)?.scene ?? String(args.scene ?? "scene-1");
+      // An established prop keeps its board; a new one with no board named goes where the director says,
+      // and if the director didn't say, onto the board the show is standing on (compile decides).
+      const scene = this.stage.compiled.props.get(id)?.scene ?? (typeof args.scene === "string" && args.scene ? args.scene : undefined);
       const existing = this.stage.compiled.props.get(id);
       if (!existing) {
         // A brief with no coordinates is a request to draw something the audience can see, not at
@@ -407,7 +461,7 @@ export class Teacher {
         if (!existing) this.stage.append([{ kind: "discard", id }], track);
         return { result: msg, isError: true };
       };
-      this.stage.beginArt();
+      this.stage.beginArt(id);
       try {
         let res: TurnResult;
         try {
@@ -418,7 +472,7 @@ export class Teacher {
               messages: [
                 {
                   role: "user",
-                  content: `道具：${id}\n舞台位置：${Math.round(box.w)}x${Math.round(box.h)}，在场景 ${scene}\n编导的要求：${brief}`,
+                  content: `道具：${id}\n舞台位置：${Math.round(box.w)}x${Math.round(box.h)}，在场景 ${scene ?? "当前这块板"}\n编导的要求：${brief}`,
                   timestamp: Date.now(),
                 },
               ],
@@ -440,9 +494,9 @@ export class Teacher {
         this.stage.append([{ kind: "patch", id, svg }], track);
       } finally {
         // Every path out — finished, no artwork, throttled into giving up, learner hit 重来 — has to
-        // give the count back, or the clock waits on a paint that will never land.
+        // take the id off the in-flight set, or the clock waits on a paint that will never land.
         this.stage.clearPreview(id);
-        this.stage.endArt();
+        this.stage.endArt(id);
       }
       this.ev.onStatus?.(`画好 ${id}`);
       return { result: `painted ${id} (${Math.round(box.w)}x${Math.round(box.h)})` };
@@ -459,12 +513,44 @@ export class Teacher {
       this.stage.play();
       this.ev.onStatus?.("等学习者回答…");
       this.parkedGate = seq;
+      // The clock may be parked on a picture this turn still owes. A parked director cannot pay that
+      // debt — it is waiting on the learner — so the debt would hold the clock short of the very
+      // question it is waiting for, and the show would freeze with the turn frozen inside it. Closing
+      // the turn calls the debt in, which lets the clock reach the gate; re-opening it afterwards
+      // keeps the rest of the turn under the same rule.
+      this.stage.setTurnOpen(false);
       const answer = await this.waitForAnswer(seq);
+      this.stage.setTurnOpen(true);
       this.parkedGate = null;
       if (answer === null) return { result: "（这一拍撤了下来，学习者没有作答）", isError: true };
       return { result: this.settleGate(seq, answer) };
     }
-    return out;
+    const note = this.blindCamera(out.ops);
+    return note ? { ...out, result: `${out.result}\n${note}` } : out;
+  }
+
+  /**
+   * A camera that names what the audience cannot see simply does not move, and a silent no-op reads to
+   * the model as a cut that happened. Say which name it could not find — and that a prop left on the
+   * board the show walked away from is exactly as invisible as one never painted.
+   */
+  private blindCamera(ops: Op[]): string | null {
+    const wanted = new Map<string, Op>();
+    for (const op of ops) {
+      if (op.kind !== "camera") continue;
+      for (const id of Array.isArray(op.target) ? op.target : op.target ? [op.target] : []) wanted.set(id, op);
+      if (op.follow) wanted.set(op.follow, op);
+    }
+    const blind = [...wanted].filter(([id, op]) => !this.audienceHas(id, op));
+    return blind.length
+      ? `镜头点名的东西观众看不见：${blind.map(([id]) => id).join("、")} —— 要么还没画，要么还留在上一块板上（只有 recall 带得过来）。画面这一拍不会动。`
+      : null;
+  }
+
+  /** Was this name in front of the audience when the camera asked: painted by then and not swept off by a cut. */
+  private audienceHas(id: string, askedBy: Op): boolean {
+    const cue = this.stage.compiled.cues.find((c) => c.op === askedBy);
+    return this.stage.visibleName(id, cue ? cue.t : this.stage.compiled.duration);
   }
 
   /**
