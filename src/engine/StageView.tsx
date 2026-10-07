@@ -313,7 +313,7 @@ export function StageView({ stage, bottomInset = 0 }: { stage: Stage; bottomInse
 
   return (
     <div className="stage" data-track={s.track} ref={hostRef}>
-      <div className="world" style={{ transform: `translate(${ox}px, ${oy}px) scale(${scale})` }}>
+      <div className={"world" + (s.props.some((p) => p.highlight === "dim-rest") ? " dimming" : "")} style={{ transform: `translate(${ox}px, ${oy}px) scale(${scale})` }}>
         {s.props.map((p) => (
           <PropView key={p.id} p={p} t={s.t} />
         ))}

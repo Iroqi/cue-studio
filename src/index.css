@@ -297,8 +297,15 @@ button.x {
   filter: drop-shadow(0 0 10px var(--am));
 }
 
-.dim-rest:has(~ .prop) {
-  opacity: 1;
+/* The prop a beat is pointing at, and everything else on the board while it is: `dim-rest` is a real
+   verb the director can call, so the frame has to answer it — the old selector matched nothing and the
+   camera simply stayed still while the tool said "highlighted". */
+.hl-dim-rest {
+  filter: drop-shadow(0 0 12px var(--am));
+}
+
+.world.dimming .prop:not(.hl-dim-rest) {
+  opacity: 0.26;
 }
 
 @keyframes pulse {
@@ -1044,6 +1051,26 @@ summary {
 .verdict.ok {
   border-color: rgba(134, 239, 172, 0.5);
   color: #86efac;
+}
+
+/* His answer, read off the tape: on a replay there is no card to click, but the dialogue still has
+   to show both sides of it — a lecture with the learner's half cut out is not what happened. */
+.echo {
+  position: absolute;
+  left: 50%;
+  top: 62px;
+  transform: translateX(-50%);
+  z-index: 6;
+  max-width: min(60ch, 82%);
+  padding: 8px 15px;
+  border-radius: 999px;
+  font-size: 13px;
+  text-align: center;
+  background: rgba(18, 16, 32, 0.92);
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  color: var(--cy);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
 }
 
 .archive {

@@ -11,7 +11,7 @@ import { LearnerArchive } from "./ui/LearnerArchive";
 import { getModels, loadConfig, saveConfig, setScriptedResponses, type LlmConfig } from "./llm/llm";
 import type { OpEntry } from "./engine/types";
 
-function describe(e: OpEntry): string {
+function describe(e: OpEntry, stage: Stage): string {
   const o = e.op as unknown as Record<string, unknown> & { kind: string };
   const s = (k: string) => (typeof o[k] === "string" ? (o[k] as string) : "");
   const n = (k: string) => (typeof o[k] === "number" ? Math.round(o[k] as number) : "");
@@ -57,6 +57,11 @@ function describe(e: OpEntry): string {
       return `静默 ${n("duration")}ms`;
     case "quiz":
       return `提问：${s("prompt")}`;
+    case "answer": {
+      const settled = o.gate !== undefined ? stage.compiled.gates.find((g) => g.seq === o.gate) : undefined;
+      const asked = settled?.op.kind === "quiz" ? settled.op.prompt : "";
+      return `他答：「${s("text")}」${asked ? ` —— ${asked.slice(0, 24)}` : ""}`;
+    }
     case "pause-for":
       return `等待：${s("reason")}`;
     case "link":
@@ -400,6 +405,9 @@ export default function App() {
         )}
         {verdict && <div className={"verdict" + (verdict.ok ? " ok" : " miss")}>{verdict.text}</div>}
 
+        {/* His own words, on the tape: a replayed or shared lesson shows the dialogue, not just the lecture. */}
+        {!gate && snap.said && <div className="echo">他当时答的是「{snap.said}」</div>}
+
         <div className="console" ref={dockRef}>
           <div className="console-inner">
             {railOpen && <BeatRail stage={stage} teacher={teacherRef.current} t={snap.t} duration={snap.duration} />}
@@ -458,7 +466,7 @@ export default function App() {
               {stage.log.all().map((e) => (
                 <div className={e.track === "main" ? "row" : "row aside"} key={e.seq}>
                   <em>{e.seq}</em>
-                  <span>{describe(e)}</span>
+                  <span>{describe(e, stage)}</span>
                 </div>
               ))}
               {lines

@@ -200,6 +200,22 @@ export interface PauseOp {
   reason: string;
 }
 
+/**
+ * What the learner actually said, laid on the tape by the stage at the moment he says it.
+ *
+ * He is the only participant in a lesson whose words used to live outside it: the answer went into a
+ * runtime field and vanished, so a shared tape carried every line the teacher spoke and none of what he
+ * answered — which is the part a later lesson is staged around. Recording it as an op is what makes the
+ * answer replayable, cuttable and re-performable like anything else on the board, and it is what lets a
+ * replay know a card has already been answered.
+ */
+export interface AnswerOp {
+  kind: "answer";
+  /** `seq` of the gate this answers — the card the clock stopped on, not whichever one it reached first. */
+  gate: number;
+  text: string;
+}
+
 export type Op =
   | BuildOp
   | PatchOp
@@ -213,7 +229,8 @@ export type Op =
   | HighlightOp
   | MotionOp
   | QuizOp
-  | PauseOp;
+  | PauseOp
+  | AnswerOp;
 
 export interface OpEntry {
   seq: number;
@@ -258,6 +275,10 @@ export interface Gate {
   seq: number;
   kind: "quiz" | "pause-for";
   op: QuizOp | PauseOp;
+  /** What the learner actually said for this card, read off the tape; null while it is still an open question. */
+  said: string | null;
+  /** End of the beat that asked it. His words belong to that beat: shown while the playhead is inside it, and nothing after. */
+  until: number;
 }
 
 export interface CameraPose {

@@ -33,7 +33,8 @@ export interface RenderState {
   narration: { text: string; progress: number; reveal: number; duration: number; style: string } | null;
   veil: { style: string; progress: number } | null;
   gate: Gate | null;
-  gateAnswer: string | null;
+  /** His own words for the card the playhead is standing in. On the tape, so a shared or replayed lesson carries the dialogue and not only the lecture. */
+  said: string | null;
   playing: boolean;
   finished: boolean;
   track: TrackId;
@@ -100,7 +101,6 @@ export class Stage {
   /** Debt that refused the last step: the clock parks a frame short of a beat edge, where the beat under the playhead reads nothing. */
   private blockedBy = 0;
   private artWait = false;
-  private gateAnswer: string | null = null;
   private rect: Box = { x: 0, y: 0, w: 1600, h: 900 };
   private camFrom: Box | null = null;
   private camFromAt = -1;
@@ -132,13 +132,11 @@ export class Stage {
   reset() {
     this.log.clear();
     this.preview.clear();
-    this.answered.clear();
     this.pending.clear();
     this.track = MAIN_TRACK;
     this.asideResume = null;
     this.t = 0;
     this.live = true;
-    this.gateAnswer = null;
     this.artFor.clear();
     this.painting.clear();
     this.turnOpen = false;
@@ -276,14 +274,13 @@ export class Stage {
 
   /**
    * Stand the clock at the edge of a cut. Everything from `seq` onward is forgotten on every
-   * track, unanswered gates become unasked, and the stage lands exactly where that op would
-   * have appeared — so the director can re-perform the passage instead of appending to it.
+   * track, and the stage lands exactly where that op would have appeared — so the director can
+   * re-perform the passage instead of appending to it. His answers on the cut passage go back with it:
+   * they are ops now, not bookkeeping, so there is nothing here to keep in step.
    */
   rerollFrom(seq: number): number {
     this.log.cutFrom(seq);
-    for (const s of [...this.answered]) if (s >= seq) this.answered.delete(s);
     this.preview.clear();
-    this.gateAnswer = null;
     this.track = MAIN_TRACK;
     this.asideResume = null;
     this.camFrom = null;
@@ -320,18 +317,19 @@ export class Stage {
   }
 
   /**
-   * Take the learner's answer. Normally the question is under the playhead; `seq` names the one the
-   * director is parked on instead, because the clock can still be running toward it — art debt, or a
-   * paused tape. Without that fallback his sentence is asked for and then thrown away.
+   * Take the learner's answer and put it on the tape.
+   *
+   * `seq` names the card the director's turn is blocked on; the card under the playhead is the fallback
+   * for a learner who answers without a turn waiting. The parked card has to win, because the clock can
+   * still be walking toward it — a director who queued two questions in one turn is parked on the second
+   * while the first sits open under the playhead, and answering whichever arrived first strands the
+   * promise the turn is actually waiting on.
    */
   answerGate(value: string, seq?: number) {
-    const gate =
-      this.currentGate() ??
-      (seq !== undefined ? this.compiled.gates.find((g) => g.seq === seq && !this.answered.has(g.seq)) : null) ??
-      null;
+    const parked = seq !== undefined ? this.compiled.gates.find((g) => g.seq === seq && g.said === null) : undefined;
+    const gate = parked ?? this.currentGate() ?? undefined;
     if (!gate) return;
-    this.answered.add(gate.seq);
-    this.gateAnswer = value;
+    this.append([{ kind: "answer", gate: gate.seq, text: value }]);
     this.pending.get(gate.seq)?.resolve(value);
     this.pending.delete(gate.seq);
     this.play();
@@ -351,18 +349,36 @@ export class Stage {
   private pending = new Map<number, { resolve: (v: string) => void }>();
 
   openGateSeqs(): number[] {
-    return this.compiled.gates.filter((g) => !this.answered.has(g.seq)).map((g) => g.seq);
+    return this.compiled.gates.filter((g) => g.said === null).map((g) => g.seq);
   }
 
-  private answered = new Set<number>();
+  /**
+   * The card the playhead is standing in. An open question wins; otherwise the card whose own beat is
+   * still on screen — his answer shows for that beat and then goes away, because it belonged to the
+   * moment he was asked, not to the rest of the lesson.
+   */
+  private cardAt(t: number): Gate | null {
+    const reached = this.compiled.gates.filter((g) => g.t <= t);
+    return reached.find((g) => g.said === null) ?? [...reached].reverse().find((g) => g.said !== null && t < g.until) ?? null;
+  }
 
+  /**
+   * The question to stop the clock on, if the show is performing live.
+   *
+   * A recording never asks again. The answer is on the tape or it isn't, and either way the person
+   * opening the link is watching, not learning: holding the clock on a card whose learner is elsewhere
+   * turns a replay into a lesson with nobody in it. Press 接着说 and the board goes live from there,
+   * which is the way to actually take the course.
+   */
   currentGate(): Gate | null {
-    return this.compiled.gates.find((g) => g.t <= this.t && !this.answered.has(g.seq)) ?? null;
+    if (!this.live) return null;
+    const card = this.cardAt(this.t);
+    return card && card.said === null ? card : null;
   }
 
   /** First gate not yet reached by the clock and not yet answered. */
   nextGate(): Gate | null {
-    return this.compiled.gates.find((g) => !this.answered.has(g.seq)) ?? null;
+    return this.compiled.gates.find((g) => g.said === null) ?? null;
   }
 
   /**
@@ -606,7 +622,7 @@ export class Stage {
         : null,
       veil: veil ? { style: (veil.op as { style: string }).style, progress: (t - veil.t) / Math.max(veil.end - veil.t, 1) } : null,
       gate: this.currentGate(),
-      gateAnswer: this.gateAnswer,
+      said: this.cardAt(t)?.said ?? null,
       askedGate: this.pending.size ? Math.min(...this.pending.keys()) : null,
       playing: this.playing,
       finished: !this.playing && t >= this.compiled.duration && this.compiled.duration > 0,
