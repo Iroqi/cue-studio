@@ -275,7 +275,7 @@ export function guardOp(op: Op): Op {
     case "build":
       return revise(op, {
         id: name(op.id),
-        label: name(op.label) || name(op.id),
+        label: name(str(op.label, str(op.id))),
         box: geometry(op.box),
         ...(op.scene !== undefined ? { scene: name(op.scene) } : {}),
         ...(op.note !== undefined ? { note: line(op.note) } : {}),
@@ -360,8 +360,12 @@ export function guardOp(op: Op): Op {
       // sequence numbers the log handed out, so a non-number is not a sloppy number — it is an answer
       // that silently belongs to no card, leaving a `text` of any type to be written into `said`, whose
       // whole contract is "a string, or null while it is still an open question".
+      //
+      // A non-integer stays unmatchable rather than being rounded: rounding would attribute somebody's
+      // words to whichever card happens to sit near the number, which rewrites the record. An answer
+      // that matches nothing leaves the card open — the lesson asks again, and that is recoverable.
       return revise(op, {
-        gate: Math.round(num(op.gate, -1)),
+        gate: Number.isInteger(op.gate) ? op.gate : -1,
         text: line(op.text),
       });
     default:

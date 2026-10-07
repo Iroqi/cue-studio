@@ -236,6 +236,32 @@ describe("guard：门也得管数量", () => {
     expect(op.text.length).toBeLessThanOrEqual(2000);
   });
 
+  it("gate 不取整：一句写歪了的回答不许算到隔壁那张卡头上", () => {
+    // 取整会把话安到"号码最近的那张卡"上 —— 那是改写记录。认不到就让它认不到：题还开着，课会再问一次。
+    const show = compile([
+      { seq: 0, track: MAIN_TRACK, turn: 0, op: { kind: "quiz", prompt: "甲？", options: ["1", "2"], answer: 1 } as Op },
+      { seq: 1, track: MAIN_TRACK, turn: 0, op: { kind: "quiz", prompt: "乙？", options: ["1", "2"], answer: 1 } as Op },
+      { seq: 2, track: MAIN_TRACK, turn: 0, op: guardOp({ kind: "answer", gate: 0.4, text: "甲的答案" } as unknown as Op) },
+    ]);
+    expect(show.gates.map((g) => g.said)).toEqual([null, null]);
+    // 认得到的仍然认：整数号码一句话一张卡。
+    const matched = compile([
+      { seq: 0, track: MAIN_TRACK, turn: 0, op: { kind: "quiz", prompt: "甲？", options: ["1", "2"], answer: 1 } as Op },
+      { seq: 1, track: MAIN_TRACK, turn: 0, op: { kind: "answer", gate: 0, text: "甲的答案" } as Op },
+    ]);
+    expect(matched.gates[0].said).toBe("甲的答案");
+  });
+
+  it("label 的缺和省还是两件事：门不许顺手给人编名字", () => {
+    // 以前是 `str(op.label, str(op.id))`：没这个字段 → 拿 id 当名字；写了空串 → 就是空。
+    // 削长度时不许把这两样并成一件事，否则带子上"故意没有名字"的那一格会被门改写成有名字。
+    const absent = guardOp({ kind: "build", id: "向量甲", box, html: "<p>a</p>" } as unknown as Op) as BuildOp;
+    expect(absent.label).toBe("向量甲");
+    const blank = guardOp({ kind: "build", id: "向量乙", label: "", box, html: "<p>a</p>" } as Op) as BuildOp;
+    expect(blank.label).toBe("");
+    expect(guardOp(blank)).toBe(blank);
+  });
+
   it("门不许把一堂正常的课改得面目全非：五分钟的骨架照样过", () => {
     const tape = [
       { kind: "build", id: "a", label: "向量 a", box: { x: 1200, y: -800, w: 900, h: 700 }, svg: `<svg>${"<path/>".repeat(500)}</svg>` } as Op,
