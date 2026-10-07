@@ -38,7 +38,10 @@ export interface RenderState {
   playing: boolean;
   finished: boolean;
   track: TrackId;
+  /** Whose lesson this is: `false` only for a tape somebody else played (a loaded or shared recording). Gates ask a question only when it is true, and the clock waits on artwork only when it is true. */
   live: boolean;
+  /** The playhead is standing at the live edge rather than on a second the learner dragged to. This is what ● 实时 reports — and it is *not* ownership: looking back at your own lesson does not turn it into a recording. */
+  following: boolean;
   /** Frames the current beat promised and the models have not handed over yet. */
   artOwed: number;
   /** The clock is standing still because the picture under it isn't there yet. */
@@ -87,8 +90,10 @@ export class Stage {
   t = 0;
   playing = false;
   live = true;
+  /** Whether the learner wants the live edge. `seek` turns it off, `goLive` and an aside turn it back on — this is the one piece of playback intent that survives a turn being appended. */
+  private followTail = true;
   track: TrackId = MAIN_TRACK;
-  asideResume: { track: TrackId; t: number } | null = null;
+  asideResume: { track: TrackId; t: number; live?: boolean; following?: boolean } | null = null;
   /** Frames a paint is in flight for. A frame they will fill is not delivered until it lands. */
   private artFor = new Set<string>();
   /** Paints dispatched to run in the background. Their frames are owed even once the turn has moved on. */
@@ -168,6 +173,7 @@ export class Stage {
     this.asideResume = null;
     this.t = 0;
     this.live = true;
+    this.followTail = true;
     this.artFor.clear();
     this.painting.clear();
     this.turnOpen = false;
@@ -184,6 +190,9 @@ export class Stage {
     this.log.restore(entries);
     this.t = 0;
     this.live = false;
+    // Somebody else's tape starts at its beginning, not at a live edge: the light stays off until the
+    // learner takes the board over (● 实时 / 接着说, both of which are `goLive`).
+    this.followTail = false;
     this.hold();
     this.recompile();
   }
@@ -310,14 +319,24 @@ export class Stage {
     this.t = Math.max(0, Math.min(t, this.compiled.duration));
     this.camFrom = null;
     this.blockedBy = 0;
-    this.live = false;
+    // Standing on an old second is a look back, not a change of ownership: the tape is still this
+    // learner's lesson — the card still asks him, the clock still waits on the painter. Only the
+    // ● 实时 light goes off, because the playhead is no longer where the director is writing.
+    this.followTail = false;
     this.emit();
   }
 
+  /** Stand the playhead at the live edge and stay there: this is what ● 实时 does, and what a loaded recording switches ownership back on with. */
   goLive() {
     this.live = true;
+    this.followTail = true;
     this.t = this.compiled.duration;
     this.emit();
+  }
+
+  /** Whether the playhead belongs to the live edge. `seek` turns this off and nothing but `goLive` turns it back on. */
+  get following(): boolean {
+    return this.followTail;
   }
 
   /** Rewind to the previous beat boundary so an interrupted passage can be re-played. */
@@ -341,6 +360,8 @@ export class Stage {
     this.asideResume = null;
     this.camFrom = null;
     this.live = true;
+    // A re-take is staged from the cut forward, so the playhead belongs to the live edge again.
+    this.followTail = true;
     this.recompile();
     this.t = this.compiledMain.duration;
     this.play();
@@ -351,11 +372,15 @@ export class Stage {
     // Through `hold()`, not just the flag: the main track's rAF is still armed when an interruption
     // arrives, and a bare assignment leaves a loop ticking a clock that is no longer being played.
     this.hold();
-    this.asideResume = { track: MAIN_TRACK, t: this.t };
+    // An aside is its own performance, and it is always live: the director is answering *this* person
+    // right now, so a card it queues must stop for him and a frame it promises must be waited on. What
+    // the main track was owned as goes back on `endAside` — it was never a question of the aside's.
+    this.asideResume = { track: MAIN_TRACK, t: this.t, live: this.live, following: this.followTail };
     this.track = `aside:${this.log.asides().length + 1}`;
     this.t = 0;
     this.camFrom = null;
     this.live = true;
+    this.followTail = true;
     this.emit();
     return this.track;
   }
@@ -368,7 +393,10 @@ export class Stage {
     if (resume) {
       this.t = resume.t;
       this.camFrom = null;
-      this.live = false;
+      // The lesson was not re-owned by being interrupted: hand back exactly what the main track was
+      // standing as, ownership and playhead both.
+      this.live = resume.live ?? true;
+      this.followTail = resume.following ?? true;
     }
     this.play();
     this.emit();
@@ -506,7 +534,11 @@ export class Stage {
       this.blockedBy = 0;
       const gate = this.currentGate();
       if (gate) this.hold();
-      else if (!this.live && this.t >= dur) this.hold();
+      // The tape runs out: stand still, unless this is the show riding its own live edge — there the
+      // end is where the director is writing next, and the clock has to pick up by itself when a new
+      // cut lands. (This used to key off `live`, which is why looking back at your own lesson was
+      // enough to make it a recording.)
+      else if (this.t >= dur && (!this.live || !this.followTail)) this.hold();
     } else this.blockedBy = owedNext;
     this.emit();
     if (this.playing) this.raf = requestAnimationFrame(this.tick);
@@ -689,6 +721,7 @@ export class Stage {
       finished: !this.playing && t >= this.compiled.duration && this.compiled.duration > 0,
       track: this.track,
       live: this.live,
+      following: this.followTail,
       artOwed: this.owed,
       artWait: this.artWait,
     };

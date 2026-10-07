@@ -256,7 +256,8 @@ export default function App() {
   };
 
   const gate = snap.gate;  const isQuiz = gate?.kind === "quiz";
-  const liveTail = snap.live && snap.playing;
+  // The light follows the playhead, not the ownership: looking back at your own lesson dims it, and the lesson is still yours.
+  const liveTail = snap.following;
   const onto = !speaking;
   // A question can be queued while the clock is still walking up to its card; the turn is blocked on it
   // either way, so his words are an answer either way.
