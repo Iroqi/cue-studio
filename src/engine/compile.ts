@@ -145,26 +145,161 @@ function limitPushIn(rect: Box, aspect: number): Box {
   return { x: c.x - MIN_CLOSEUP_W / 2, y: c.y - MIN_CLOSEUP_W / aspect / 2, w: MIN_CLOSEUP_W, h: MIN_CLOSEUP_W / aspect };
 }
 
-function propBox(props: Map<string, Prop>, id: string): Box | undefined {
-  const p = props.get(id);
-  const rev = p?.revisions[p.revisions.length - 1];
-  if (!rev) return undefined;
-  // Aim at the ink, not at the frame the art was allowed to fill: a drawing that hugs one corner of its
-  // own canvas sits a fifth of a view off centre while the arithmetic says it is perfectly framed.
+/** 一格的取景盒：画出来的墨比声明的盒子准，空白边上不该留出画面。 */
+function revBox(rev: Revision): Box {
   return inkBox(rev.svg, rev.box) ?? rev.box;
 }
 
-function sceneBox(props: Map<string, Prop>, scene: string): Box | undefined {
-  const boxes: Box[] = [];
+/**
+ * 镜头脚下那块地：观众这一刻看得见、还没被换场扫走的格子，按板并起来的盒子。
+ *
+ * 上一件把"什么站在台上"变成一段窗口，给了每帧四个读者，可它没有管镜头。镜头那一头读的是
+ * `revisions[length - 1]` 那一格 —— 带子尽头那一格，问的也是"到带子尽头还站着吗"，不是"镜头站着的那
+ * 一刻还站着吗"；分板按 `prop.scene`（道具最后被挪去了哪），不是按那一次外观落在哪块板。于是一卷带子
+ * 上有两种说法：`visibleName` 说观众已经看不见这件东西，落点却还按它的地皮算。后果不是难看，是
+ * `blindCamera` 那句"画面这一拍不会动"成了谎话：它按观众那一头判断，镜头按另一头走。实测的错法（改前
+ * 每条都跑过，数字见 `camera-moment.test.ts`）：`focus` 一个刚撤下的名字，整帧站到 x=6000 那件早就
+ * 不在台上的东西上；`track` 跟同一个名字，画面从 `{x:0}` 滑到 `{x:4300}`；换场之后点旧板的名，镜头从
+ * `{x:2400}` 飞到那块被幕布压住的板上；`discard` 落在 `track` 中途以后还在推它；同一拍里后一刀把前一刀
+ * 已经看见的落点改写。
+ *
+ * 这里说的是**观众那一头**那一句，两半都要：`rev.scene`（这一次外观落在哪块板，不是道具最后被挪去了哪
+ * —— `standing.ts` 同一句话）站着，并且没有被最近那一刀扫走。读法和"从头把带子再读一遍、一个缓存都不
+ * 许用"那份朴素参照逐条对账，由 `camera-moment.test.ts` 钉住，不是"看起来一样"。
+ *
+ * 代价不许落在带子长度上。旧写法每点一次名把整张道具表走一遍，所以"板名当镜头目标"这条导演常用的路
+ * （`camera` 的说明里就写着板名可以当目标）是二次的。同一卷 12000 拍的带子，把那一刀点名去掉是
+ * 23.2 / 21.2ms（两次独立跑，各取三次最小值），点上名是 1073 / 1089ms —— 点名这件工具本身贵过带子其余
+ * 部分约 49 倍；导演一笔一笔追加时付的是同一笔钱的一小段：3000 拍的带子上追加 20 拍，点名那条
+ * 1017 / 1079ms，不点名 113 / 117ms（约 9 倍）。改成边走边记：落一笔、收一笔只动它自己那一格；并好的
+ * 盒子只在有人问过这块板时才算，算一次记一次，直到这块板又变了东西或幕布走过一刀。于是每一拍付的是
+ * "这一刻台上有几样"，不是"这堂课一共有过几样"（同一台机器同一批带子改后：1089ms → 33.2ms，与不点名
+ * 那条只差 1.6 倍；追加那一条 1079ms → 155ms，比值 1.3 —— 点名那一刀从此和一句旁白一个量级）。
+ */
+class CameraGround {
+  /** 道具 id → 此刻站着的那一格。一个道具同时只有一格站着：它的窗口不重叠。 */
+  private readonly byId = new Map<string, Revision>();
+  /** 板名 → 此刻站在这块板上的格子。被换场扫走的仍留在里面：回到那块板正是它们重新可见的时候。 */
+  private readonly onBoard = new Map<string, Map<string, Revision>>();
+  /** 一块板上所有站着格子的并。缺键是"过期了，下一次问再量一遍"；`null` 是"量过，这块板空着"。 */
+  private readonly all = new Map<string, Box | null>();
+  /** 只并最近那一刀之后落下的格子。走过一刀整份作废 —— 从那一刻起"看得见"换了半条规则。 */
+  private readonly since = new Map<string, Box | null>();
+  /** 带子已经走到的那一刀：`flip` 是幕布盖住整块板的瞬间，`board` 是落下的那块板。 */
+  private cut: { flip: number; board: string } | null = null;
+
+  /** 这一格此刻在不在观众眼前：`swept` 的另一半，折成一次比较。 */
+  private sees(rev: Revision): boolean {
+    return !this.cut || rev.scene === this.cut.board || rev.t >= this.cut.flip;
+  }
+
+  /** 这块板又变了东西：两份量过的账都不许再拿。 */
+  private stale(name: string): void {
+    this.all.delete(name);
+    this.since.delete(name);
+  }
+
+  /** 缓存还握着答案就把这一格并进去；缺键就别凭空写一份 —— 下一次问会整板量。 */
+  private widen(cache: Map<string, Box | null>, name: string, box: Box): void {
+    if (!cache.has(name)) return;
+    const prev = cache.get(name);
+    cache.set(name, prev ? unionBox([prev, box]) : box);
+  }
+
+  /** 把一块板上站着的格子量一遍；`from` 给了就只量那一刀之后落下的。 */
+  private measure(name: string, from: number | null): Box | null {
+    const out: Box[] = [];
+    for (const rev of this.onBoard.get(name)?.values() ?? []) {
+      if (from === null || rev.t >= from) out.push(revBox(rev));
+    }
+    return out.length ? unionBox(out) : null;
+  }
+
+  put(id: string, rev: Revision): void {
+    const prev = this.byId.get(id);
+    if (prev && prev !== rev) {
+      // 换了板：旧板上那一笔得摘掉，否则旧板的地皮还按它量，镜头会飞到一个观众空着的板上。
+      // 同一块板上换了一格（重画、填占位符）：并里还压着旧那一笔，而新格可能更小 —— 两种都不许拿
+      // 旧账，重量一次比留一个偏大的框诚实。
+      if (prev.scene !== rev.scene) this.onBoard.get(prev.scene)?.delete(id);
+      this.stale(prev.scene);
+      if (prev.scene !== rev.scene) this.stale(rev.scene);
+    }
+    this.byId.set(id, rev);
+    const on = this.onBoard.get(rev.scene);
+    if (on) on.set(id, rev);
+    else this.onBoard.set(rev.scene, new Map([[id, rev]]));
+    const box = revBox(rev);
+    this.widen(this.all, rev.scene, box);
+    // 看不见的格子不许进"观众眼前那份地皮"：填一块早被幕布压住的板的占位符，落笔时刻在 `flip` 之前，
+    // 补上画面并不让它重新可见 —— 并进那份缓存就等于把它算进镜头该框住的地方。
+    if (this.sees(rev)) this.widen(this.since, rev.scene, box);
+  }
+
+  off(id: string): void {
+    const rev = this.byId.get(id);
+    if (!rev) return;
+    this.byId.delete(id);
+    this.onBoard.get(rev.scene)?.delete(id);
+    // 摘掉一格只能整板重量：并集没有逆运算，留一个偏大的框就是"撤走的东西还在把画面撑大"。
+    this.stale(rev.scene);
+  }
+
+  /**
+   * 幕布走过一刀。带子是单调走的，所以"处理这一刀"就是"这一刻之后的镜头要按它算"：换场占时钟，排在它
+   * 身后的镜头此刻已过 `flip`，排在它前面的还在换场之前 —— 那一头观众确实还没被扫走。
+   */
+  cutTo(board: string, flip: number): void {
+    this.cut = { board, flip };
+    this.since.clear();
+  }
+
+  /** 这一格此刻看得见；看不见就没有目标 —— 镜头不许为一个观众看不见的名字动。 */
+  revOf(id: string): Revision | undefined {
+    const rev = this.byId.get(id);
+    return rev && this.sees(rev) ? rev : undefined;
+  }
+
+  /**
+   * 这块板此刻在观众眼前的地皮；一格都不站着就没有答案 —— 镜头不许为一块空板动。
+   *
+   * 站在脚下的板（`cut.board`）量全部：幕布一抬，上一次访问留下的那些就又回到眼前，这一刀之前落下的
+   * 东西属于这块板所以不算被扫走。点别的板的名只量"这一刀之后落下的"—— 一块被压住的板观众看不见，
+   * 镜头就该像点一个不存在的名那样不动，这正是 `blindCamera` 说的那句话。
+   */
+  box(name: string): Box | undefined {
+    const other = this.cut && this.cut.board !== name;
+    const cache = other ? this.since : this.all;
+    if (!cache.has(name)) cache.set(name, this.measure(name, other ? this.cut!.flip : null));
+    return cache.get(name) ?? undefined;
+  }
+
+  /** 落上一块板时该站的位置：这块板上站着的一切，含此刻还被幕布压着的那些。 */
+  landing(name: string): Box | undefined {
+    if (!this.all.has(name)) this.all.set(name, this.measure(name, null));
+    return this.all.get(name) ?? undefined;
+  }
+}
+
+/**
+ * 每块板到带子尽头为止的地皮：`Compiled.scenes` 要说的是"这堂课最后走到哪"，不是这一刻 —— 导演的快照
+ * 读它，而且它得把被换场扫走的那些也算进来（那些东西还在档案里，`recall` 带得回来）。镜头自己那一刻的
+ * 地皮在上面（`CameraGround`），两处不许混成一个。
+ *
+ * 一趟走完：以前是"每块板把整张道具表走一遍"，名字越多走得越多次 —— 一块板一个名字的时候看不出来
+ * （所以旧的那条测试是五万格道具、一块板，绿的），板名一多就又是二次的。
+ */
+function groundsAtEnd(props: Map<string, Prop>): Map<string, Box[]> {
+  const byBoard = new Map<string, Box[]>();
   for (const p of props.values()) {
-    if (p.scene !== scene) continue;
-    // 量地皮问的是"到带子尽头这块板上还有什么"，正是旧写法 `discardedAt === undefined` 想问的事。
+    // 窗口铺满每个道具自己的时间线，所以"到带子尽头还站着"就是最后那一格还没收笔。
     const last = p.revisions[p.revisions.length - 1];
     if (!onstageAt(last, Infinity)) continue;
-    const b = last ? propBox(props, p.id) : undefined;
-    if (b) boxes.push(b);
+    const list = byBoard.get(p.scene);
+    if (list) list.push(revBox(last!));
+    else byBoard.set(p.scene, [revBox(last!)]);
   }
-  return boxes.length ? unionBox(boxes) : undefined;
+  return byBoard;
 }
 
 /** Narration, transitions and beats own the clock; camera moves, highlights and motion run on top of them. */
@@ -232,14 +367,22 @@ export function compile(entries: OpEntry[]): Compiled {
   };
 
   /**
-   * Where the camera stands for a board. If anything has been laid on it, frame that (padded, as it
-   * always was) — a director who places by hand owns the position. If nothing has, the board still has
-   * a place, and moving the camera there is the whole point of the cut: standing still while the veil
-   * sweeps the previous board's art away leaves the learner staring at an empty frame they were never
-   * shown.
+   * 镜头脚下那块地，跟着带子一边走一边记。见 `CameraGround`：解释器走到这一刻时手上的台，就是镜头
+   * 该框住的台 —— 不是带子尽头那一格。
+   */
+  const ground = new CameraGround();
+
+  /**
+   * 落上一块板时镜头该站的位置。如果这块板上有站着的东西（含上一次访问留下的、此刻还被幕布压着的），
+   * frame 它们（padded，一直如此）—— 导演手工摆过的东西 owns 那个位置。如果什么都没有，板也自有一个
+   * 地方，把镜头移过去正是这一刀的全部意义：站着不动、让幕布把上一块板的画扫走，学习者就只能盯着一帧
+   * 自己从没被展示过的空画面。
+   *
+   * 这里不问"扫没扫走"：回到一块板正是那些东西重新在眼前的一刻，落点得把它们一起框住。镜头点一块板的
+   * 名是另一回事，那一头走 `ground.box`。
    */
   const boardView = (name: string, aspect: number): Box => {
-    const laid = sceneBox(props, name);
+    const laid = ground.landing(name);
     return fitRect(laid ? padded(laid, 1.2) : boardOf(name), aspect);
   };
 
@@ -297,7 +440,10 @@ export function compile(entries: OpEntry[]): Compiled {
     if (op.target) {
       const ids = Array.isArray(op.target) ? op.target : [op.target];
       for (const id of ids) {
-        const b = propBox(props, id) ?? sceneBox(props, id);
+        // 先当道具名，再当板名 —— 和以前一样，但两个都问镜头脚下这一刻：观众已经看不见的那一格
+        // 不是目标，那一头 `blindCamera` 说的"画面这一拍不会动"才跟着成立。
+        const rev = ground.revOf(id);
+        const b = rev ? revBox(rev) : ground.box(id);
         if (b) targets.push(b);
       }
     }
@@ -326,8 +472,13 @@ export function compile(entries: OpEntry[]): Compiled {
       rect = { x: c.x - w / 2, y: c.y - (w / (from.w / from.h)) / 2, w, h: w / (from.w / from.h) };
     }
     if (op.mode === "track" && op.follow) {
-      const b = propBox(props, op.follow);
-      if (b) rect = { ...from, x: centerOf(b).x - from.w / 2, y: centerOf(b).y - from.h / 2 };
+      // 跟读一个观众已经看不见的名字，画面就滑到那块空地上去。这一刀不许动 —— 名单里也没有它，
+      // 而 `visibleName` 那一头说的正是"观众看不见它"。
+      const rev = ground.revOf(op.follow);
+      if (rev) {
+        const c = centerOf(revBox(rev));
+        rect = { ...from, x: c.x - from.w / 2, y: c.y - from.h / 2 };
+      }
     }
     if (op.mode === "fit") rect = padded(rect, 1.2);
     return limitPushIn(fitRect(rect, from.w / from.h), from.w / from.h);
@@ -445,6 +596,8 @@ export function compile(entries: OpEntry[]): Compiled {
         };
         if (fillingPlaceholder) p.revisions[p.revisions.length - 1] = revision;
         else layRevision(p, revision);
+        // 迟到的那一笔落在一段已经收掉的窗口里：观众眼前没有多出一格，镜头脚下也不许多算一格。
+        if (onstageAt(revision, start)) ground.put(op.id, revision);
         break;
       }
       case "recall": {
@@ -455,12 +608,16 @@ export function compile(entries: OpEntry[]): Compiled {
         // `off: undefined` 不是装饰：`{...prev}` 会把上一次站着的外观那"已经收掉"的时刻一起抄过来，
         // 于是 recall 带回台上的东西一落地就是撤着的 —— 道具闪一下然后消失，而带子上没有第二刀
         // discard。一次 recall 就是一次新的落笔，它自带一个新窗口。
-        layRevision(src, { ...prev, t: start, off: undefined, scene: src.scene, box: placedBox(op.box, op.here, i, src.scene) });
+        const back: Revision = { ...prev, t: start, off: undefined, scene: src.scene, box: placedBox(op.box, op.here, i, src.scene) };
+        layRevision(src, back);
+        ground.put(op.id, back);
         break;
       }
       case "discard": {
         const p = props.get(op.id);
-        if (p) markOff(p.revisions, start);
+        if (!p) break;
+        markOff(p.revisions, start);
+        ground.off(op.id);
         break;
       }
       case "link": {
@@ -485,9 +642,14 @@ export function compile(entries: OpEntry[]): Compiled {
           // Reserve the ground before anything is looked for on it, so a board cut to twice keeps the
           // same place and `recall`ing onto it is not relative to where the camera last stood.
           standing = op.to;
+          // 幕布盖住整块板的那一刻是 `flip`，和 `frame.ts` 里那一刀同一个算法：换场占时钟，`flip` 是
+          // 它的中点。先按换场之前那一刻量落点（这一块板上的旧东西在这一刀之后仍然看得见），再让
+          // 排在它身后的镜头按这一刀算。
+          const cue = cues[cues.length - 1];
           const to = boardView(op.to, cursor.w / cursor.h);
-          cues[cues.length - 1].to = to;
+          cue.to = to;
           cursor = to;
+          ground.cutTo(op.to, cue.t + (cue.end - cue.t) / 2);
         }
         break;
       }
@@ -524,15 +686,11 @@ export function compile(entries: OpEntry[]): Compiled {
   }
 
   const scenes = new Map<string, Box>();
-  // One board's bounds used to be recomputed once *per prop on it*, and each recompute walked every
-  // prop: a 20k-prop tape took 140 seconds to compile, which is the tab freezing, not a slow frame.
-  // The question "what does this board cover" has one answer per name, so ask it once per name.
-  const measured = new Set<string>();
-  for (const p of props.values()) {
-    if (measured.has(p.scene)) continue;
-    measured.add(p.scene);
-    const b = sceneBox(props, p.scene);
-    if (b) scenes.set(p.scene, b);
+  // The question "what does this board cover, by the end of the tape" has one answer per name, and it
+  // is asked once per prop for the whole show — not once per prop per name.
+  for (const [name, boxes] of groundsAtEnd(props)) {
+    const b = unionBox(boxes);
+    if (b) scenes.set(name, b);
   }
 
   // Overlays don't advance the clock, but the show isn't over while one is still running: a camera

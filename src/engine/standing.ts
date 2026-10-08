@@ -206,6 +206,21 @@ export class StandingIndex {
   }
 
   /**
+   * 这个名字此刻还站着、而且没有被最近那一刀扫走 —— 也就是观众看得见它。
+   *
+   * 跟读的镜头问这一句：`discard` 可以落在 `track` 那一刀滑动的中途（overlay 不占时钟），于是画面正在
+   * 往一件刚消失的东西滑过去，而 `motion` 还在把它往外推。落点是历史，推不许跟着追 —— 那一头观众已经
+   * 没有这件东西了。`swept` 那半条在这里折成一次比较，和 `runtime.ts` 里那句原话同解；带子的价钱只进
+   * 游标那两步二分，名单本身不必走一遍。
+   */
+  seen(id: string, t: number, cut: { flip: number; board: string } | null): boolean {
+    this.moveTo(t);
+    const s = this.live.get(id);
+    if (!s) return false;
+    return !cut || s.rev.scene === cut.board || s.rev.t >= cut.flip;
+  }
+
+  /**
    * 这一拍落的笔：时刻落在 `[from, to)`、而且到 `at` 这一刻还站得住的那些 ——「时钟站的这一拍还欠几幅
    * 画」问的就是这一句。旧写法为了它把整张道具表走一遍，连观众早就看不见的（换场扫走的、已经撤下的、
    * 站在别的板上的）也走。

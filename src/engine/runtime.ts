@@ -608,6 +608,10 @@ export class Stage {
 
   private ride(rect: Box, follow: string | null, t: number): Box {
     if (!follow) return rect;
+    // 跟读的那一格已经不在观众眼前了 —— `discard` 落在这一刀滑动的中途是常事（overlay 不占时钟，带子
+    // 可以紧跟着下一句落）。这时画面停在它的落点上，不许再往外推：往一件刚消失的东西的方向滑，看上去
+    // 像是镜头还在找它，而名单里早就没有它了。
+    if (!this.standing.seen(follow, t, this.cutAt(t))) return rect;
     const { dx, dy } = this.followOffset(follow, t);
     return dx === 0 && dy === 0 ? rect : { ...rect, x: rect.x + dx, y: rect.y + dy };
   }
