@@ -1,5 +1,5 @@
 import { ownsTime } from "./compile";
-import type { Compiled, Cue, Gate, Revision } from "./types";
+import type { Compiled, Cue, Gate } from "./types";
 
 /*
  * 时钟每一帧问带子的，全是同一类问题：这一刻哪一格还在跑。带子是只增不改的序列，一条 cue 落下去
@@ -36,17 +36,6 @@ function firstAbove(a: number[], v: number): number {
     else lo = m + 1;
   }
   return lo;
-}
-
-/**
- * 道具在 `t` 这一刻站着的那一次外观：倒着找第一条 `t` 已经到的。和"筛完整列再取最后一格"同解，
- * 只是不每帧复制一份外观表。
- */
-export function revisionAt(revisions: Revision[], t: number): Revision | undefined {
-  for (let i = revisions.length - 1; i >= 0; i--) {
-    if (revisions[i].t <= t) return revisions[i];
-  }
-  return undefined;
 }
 
 /** 一帧的画框：已经站定的那一刀的落点，和正在滑的那一刀。 */

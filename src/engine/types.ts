@@ -241,6 +241,14 @@ export interface OpEntry {
 
 export interface Revision {
   t: number;
+  /**
+   * 这一次外观被 `discard` 撤下的那一刻；`undefined` 就是到带子尽头还站着。
+   *
+   * 它和 `Cue.end` 是同一件东西：一次外观是一段窗口，不是一个会被后一刀覆盖的状态。以前道具身上只挂
+   * 一个 `discardedAt` 数，所以"撤下 → 重画 → 再撤下"只剩最后那一刀，倒带回到第一刀之前的人看见一件
+   * 早就撤掉的东西又站回台上。
+   */
+  off?: number;
   /** Which board this revision was laid down on. The prop's `scene` is where it ended up; this is where
    * it was at this moment — so a recall into a later scene cannot erase the prop from the scene before it. */
   scene: string;
@@ -257,8 +265,8 @@ export interface Revision {
 export interface Prop {
   id: string;
   scene: string;
+  /** 落下顺序，也是层叠顺序。时间上单调：一次外观总在它身后那一次之前。 */
   revisions: Revision[];
-  discardedAt?: number;
   links: { to: string; relation: string }[];
 }
 
