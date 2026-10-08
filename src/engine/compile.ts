@@ -9,12 +9,14 @@ import type {
   NarrateOp,
   Op,
   OpEntry,
+  Frame,
   Prop,
   Revision,
   TransitionOp,
 } from "./types";
 import { inkBox } from "./ink";
 import { speechMs, SETTLE_MS } from "./speech";
+import { staged, watermarks } from "./reads";
 
 export const VIEWPORT: Box = { x: 0, y: 0, w: 1600, h: 900 };
 
@@ -471,9 +473,114 @@ export function compile(entries: OpEntry[]): Compiled {
     if (b) scenes.set(p.scene, b);
   }
 
+  // Which board each prop may be standing on. Indexed by *every* board its revisions were laid on, so a
+  // name in here is a candidate, not an answer — `visibleName` still asks the revision standing at `t`.
+  // The old read walked the whole prop table per camera op that names a board, and a director who frames
+  // "一整块板" asks it every turn.
+  const sceneProps = new Map<string, Prop[]>();
+  for (const p of props.values()) {
+    if (p.revisions.length === 0) continue;
+    // One entry per prop per board it has ever been laid on — deduped here, so the lists stay short and
+    // the build is linear rather than `includes`-checking its own output.
+    const onThisProp = new Set(p.revisions.map((r) => r.scene));
+    for (const scene of onThisProp) {
+      const on = sceneProps.get(scene);
+      if (on) on.push(p);
+      else sceneProps.set(scene, [p]);
+    }
+  }
+
   // Overlays don't advance the clock, but the show isn't over while one is still running: a camera
   // glide or a motion cue emitted after the last line would otherwise be truncated at the tape end.
   const tails = cues.reduce((m, c) => Math.max(m, c.end), 0);
 
-  return { props, scenes, cues, gates, beats, duration: Math.max(t, tails), lastSeq };
+  return {
+    props,
+    scenes,
+    sceneProps,
+    cues,
+    gates,
+    beats,
+    duration: Math.max(t, tails),
+    lastSeq,
+    frame: buildFrame(cues, props, gates),
+  };
+}
+
+/**
+ * The read side of a show: the same cues, split into the handful of lines a frame actually asks about,
+ * each carrying the two sorted arrays `reads.ts` searches.
+ *
+ * This costs one pass over `cues` per recompile — the tape only moves when something is appended, cut,
+ * or restored — and buys the sixty reads a second that used to re-scan every one of them. A long tape
+ * used to pay for its own length once per frame: measured at 64k props, one frame cost 15.3ms against a
+ * 16.7ms budget, and the show was still linear at the writing end.
+ *
+ * `Timeline.cues` holds the *same objects* as `Compiled.cues`, never copies: `loop.ts` finds the cut it
+ * just issued by comparing `c.op === askedBy`, and `identity.test.ts` guards that identity.
+ */
+export function buildFrame(cues: Cue[], props: Map<string, Prop>, gates: Gate[]): Frame {
+  const framing: Cue[] = [];
+  const cuts: Cue[] = [];
+  const owning: Cue[] = [];
+  const narrate: Cue[] = [];
+  const highlights: Cue[] = [];
+  const motions: Cue[] = [];
+  const motionByProp = new Map<string, Cue[]>();
+
+  for (const c of cues) {
+    switch (c.op.kind) {
+      case "camera":
+        framing.push(c);
+        break;
+      case "transition":
+        framing.push(c);
+        cuts.push(c);
+        owning.push(c);
+        break;
+      case "narrate":
+        owning.push(c);
+        narrate.push(c);
+        break;
+      case "beat":
+        owning.push(c);
+        break;
+      case "highlight":
+        highlights.push(c);
+        break;
+      case "motion":
+        motions.push(c);
+        {
+          const id = c.op.id;
+          const list = motionByProp.get(id);
+          if (list) list.push(c);
+          else motionByProp.set(id, [c]);
+        }
+        break;
+    }
+  }
+
+  // The instant a veil is half over is when the board is swept, and it is a property of the cue, not of
+  // the frame: `cutAt` used to recompute it while walking the whole cue list for every prop.
+  const flips = cuts.map((c) => c.t + (c.end - c.t) / 2);
+
+  const open: Gate[] = [];
+  const said: Gate[] = [];
+  for (const g of gates) (g.said === null ? open : said).push(g);
+  // `gates` is in tape order, so both halves are sorted by `t`; `until` follows its beat, and beats are
+  // sequential, so the answered half is sorted by `until` too — which is what `cardAt` searches on.
+  const saidT = said.map((g) => g.t);
+
+  return {
+    framing: watermarks(framing),
+    cuts: watermarks(cuts),
+    flips,
+    owning: watermarks(owning),
+    narrate: watermarks(narrate),
+    highlights: watermarks(highlights),
+    motions: watermarks(motions),
+    motionByProp: new Map([...motionByProp].map(([id, list]) => [id, watermarks(list)])),
+    staged: staged(props.values()),
+    gates: { gates, open, said, saidT },
+  };
 }

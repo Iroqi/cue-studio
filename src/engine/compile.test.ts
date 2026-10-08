@@ -210,11 +210,23 @@ describe("compile：一条长带付一次线性的价钱", () => {
   /**
    * 输入翻四倍，时间不许翻到二次的那个量级去。两边都取到几十毫秒以上，否则量的是计时器的
    * 分辨率和 GC 的抖动，不是这条带的形状。
+   *
+   * 这条下限以前是对着**固定条数**断的（`expect(a).toBeGreaterThan(10)`）。那一次把解释器改成
+   * 线性之后，20k 条的 `每题一答` 在快机器上跑进了 10ms 以内 —— 于是守门的那一条自己开始翻：
+   * 它红的时候说的不是"带变回二次的了"，而是"这台机器读得比阈值快"。下限是**测量**的要求，
+   * 不是这条带的性质，所以让探针自己加长到跨过下限；跨过不了（长到封顶还是太快）就明说没量到，
+   * 而不是假装量到了。比值仍然在同一个 `n` 上取，四倍输入对四倍输入。
    */
+  const FLOOR_MS = 10;
   const linear = (mk: (i: number) => Op, small: number) => {
-    const a = best(entries(small, mk));
-    const b = best(entries(small * 4, mk));
-    expect(a).toBeGreaterThan(10);
+    let n = small;
+    let a = best(entries(n, mk));
+    while (a < FLOOR_MS && n < small * 16) {
+      n *= 4;
+      a = best(entries(n, mk));
+    }
+    if (a < FLOOR_MS) throw new Error(`量不到：${n} 条只用 ${a.toFixed(2)}ms，这台机器上读不出带的形状`);
+    const b = best(entries(n * 4, mk));
     return b / a;
   };
 

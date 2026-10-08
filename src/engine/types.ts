@@ -298,12 +298,78 @@ export interface Beat {
   gate: boolean;
 }
 
+/**
+ * One kind-filtered slice of the cue list, ready for the clock to read.
+ *
+ * `compile` lays cues down in tape order, and the stage clock only moves forward, so `t` is
+ * non-decreasing here. `end` is not (an overlay can outlive the one after it), which is why the
+ * third array is a running maximum: `open[i] = max(end[0..i])`. Those two are what turn "which cues
+ * are under the playhead" from a scan of the whole tape into two binary searches — see `reads.ts`.
+ */
+export interface Timeline {
+  /** The same `Cue` objects as `Compiled.cues`, never copies: `loop.ts` recognises its own cut by identity. */
+  cues: Cue[];
+  t: number[];
+  open: number[];
+}
+
+/** Every prop with at least one revision, in tape order — the order is z-order, so it is not sorted away. */
+export interface Staged {
+  props: Prop[];
+  /** Each prop's first revision lands here. Not sorted: a name `link`ed early can be painted late. */
+  at: number[];
+  /** `reach[i] = min(at[i..])`, so it is non-decreasing and `reach[i] > t` means no prop from `i` on has landed. */
+  reach: number[];
+}
+
+/** The cards, indexed for the playhead instead of scanned for it. */
+export interface GateIndex {
+  /** Every card, tape order — `t` is non-decreasing along it. */
+  gates: Gate[];
+  /** Still-open cards, tape order. The earliest one is the whole answer to "what is it waiting on". */
+  open: Gate[];
+  /** Answered cards, tape order. Both `t` and `until` are non-decreasing along it, so the last reached one is the one the playhead is standing in. */
+  said: Gate[];
+  saidT: number[];
+}
+
+/**
+ * What a frame needs in order to answer "what is on the board right now" without reading the tape.
+ * Built once per recompile, read sixty times a second — see `reads.ts` for why each line is searchable.
+ */
+export interface Frame {
+  /** camera + transition: everything that moves the eye, in the order the old `cameraAt` walked them. */
+  framing: Timeline;
+  /** transition only, plus `flips[i]`: the instant that veil is half over, i.e. when the board is swept. */
+  cuts: Timeline;
+  flips: number[];
+  /** narrate + beat + transition: the cues that own the clock, which is what `owedAt` stands inside. */
+  owning: Timeline;
+  /** narrate only: the line currently on screen. */
+  narrate: Timeline;
+  highlights: Timeline;
+  /** every motion cue, tape order — the one read that asks "what is moving" across the whole board. */
+  motions: Timeline;
+  /** motion cues by prop id; several can stack on one object, in tape order. */
+  motionByProp: Map<string, Timeline>;
+  staged: Staged;
+  gates: GateIndex;
+}
+
 export interface Compiled {
   props: Map<string, Prop>;
   scenes: Map<string, Box>;
+  /**
+   * Which props have *ever* been laid on each board — candidates, not occupants. `visibleName` still
+   * asks each candidate for the revision standing at `t`, because a prop recalled off a board must not
+   * keep making it visible.
+   */
+  sceneProps: Map<string, Prop[]>;
   cues: Cue[];
   gates: Gate[];
   beats: Beat[];
   duration: number;
   lastSeq: number;
+  /** The read side of the same show: derived, so it cannot disagree with the tape. */
+  frame: Frame;
 }

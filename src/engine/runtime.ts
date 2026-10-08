@@ -1,8 +1,10 @@
-import { compile, ownsTime } from "./compile";
+import { compile } from "./compile";
 import { MAIN_TRACK, OpLog } from "./log";
 import { displaced, motionOffset } from "./motion";
+import { cardAt, framingAt, revisionAt, runningLast, windowOf } from "./reads";
+import { upperBound } from "./search";
 import { SETTLE_MS } from "./speech";
-import type { Box, Compiled, Cue, Gate, MotionOp, Op, OpEntry, Prop, Revision, Scene3DSpec, TrackId } from "./types";
+import type { Box, Compiled, Cue, Gate, HighlightOp, MotionOp, Op, OpEntry, Prop, Revision, Scene3DSpec, TrackId, TransitionOp } from "./types";
 
 /** A cut the clock has already walked through the veil of. */
 type Cut = { flip: number; board: string };
@@ -435,7 +437,7 @@ export class Stage {
   private pending = new Map<number, { resolve: (v: string) => void }>();
 
   openGateSeqs(): number[] {
-    return this.compiled.gates.filter((g) => g.said === null).map((g) => g.seq);
+    return this.compiled.frame.gates.open.map((g) => g.seq);
   }
 
   /**
@@ -444,8 +446,7 @@ export class Stage {
    * moment he was asked, not to the rest of the lesson.
    */
   private cardAt(t: number): Gate | null {
-    const reached = this.compiled.gates.filter((g) => g.t <= t);
-    return reached.find((g) => g.said === null) ?? [...reached].reverse().find((g) => g.said !== null && t < g.until) ?? null;
+    return cardAt(this.compiled.frame.gates, t);
   }
 
   /**
@@ -464,7 +465,7 @@ export class Stage {
 
   /** First gate not yet reached by the clock and not yet answered. */
   nextGate(): Gate | null {
-    return this.compiled.gates.find((g) => g.said === null) ?? null;
+    return this.compiled.frame.gates.open[0] ?? null;
   }
 
   /**
@@ -478,14 +479,15 @@ export class Stage {
   private owedAt(t: number): number {
     if (!this.live || this.debtSuspended) return 0;
     if (!this.turnOpen && this.artFor.size === 0 && this.painting.size === 0) return 0;
-    let start = t;
-    let end = t;
-    for (const c of this.compiled.cues) {
-      if (c.t > t) break;
-      if (!ownsTime(c.op) || c.end <= t) continue;
-      start = c.t;
-      end = c.end;
-    }
+    /*
+     * The frame the clock is standing in. The old read walked the whole cue list keeping the last
+     * time-owning running cue; `frame.owning` is exactly those cues, in the same order, so the same
+     * answer is one window. Nothing running means a zero-length beat at `t`, which is what the old
+     * `start = end = t` did — and `inThisBeat` then bills nothing, which is the point.
+     */
+    const beat = runningLast(this.compiled.frame.owning, t);
+    const start = beat ? beat.t : t;
+    const end = beat ? beat.end : t;
     // Half-open: a frame laid down at the exact millisecond this beat ends belongs to the NEXT beat,
     // so it must not bill the line still being spoken. Inclusive here parked a caption mid-sentence.
     const inThisBeat = (at: number) => at >= start && at < end;
@@ -493,11 +495,15 @@ export class Stage {
     // is walking onto belongs to the beats after the cut, not to the line being spoken now.
     const cut = this.cutAt(t);
     let n = 0;
-    for (const p of this.compiled.props.values()) {
+    const { props, reach } = this.compiled.frame.staged;
+    // Everything past the bound belongs to a scene the show has not walked into yet — it had no
+    // revision at `t`, so the old loop skipped it after building a filtered array to find that out.
+    const landed = upperBound(reach, t);
+    for (let i = 0; i < landed; i++) {
+      const p = props[i];
       if (p.discardedAt !== undefined && p.discardedAt <= t) continue;
-      const onStage = p.revisions.filter((r) => r.t <= t);
-      if (onStage.length === 0) continue;
-      const rev = onStage[onStage.length - 1];
+      const rev = revisionAt(p, t);
+      if (!rev) continue;
       if (this.swept(rev, cut)) continue;
       if (!painted(rev) && inThisBeat(rev.t) && (this.turnOpen || !this.painting.has(p.id))) n++;
     }
@@ -548,9 +554,14 @@ export class Stage {
    * How far a prop has been displaced from its anchor by the motion running under it. A `track` shot
    * aims at the anchor when it is compiled, so without this the camera sits still while the artwork it
    * is following slides out of the frame.
+   *
+   * `motionByProp` already holds this id's cues and nothing else, so "the last one running" is the
+   * window's tail rather than a `filter` + `pop` over the whole tape — this used to run once per
+   * settled `track` shot, every frame.
    */
   private followOffset(id: string, t: number): { dx: number; dy: number } {
-    const mo = this.compiled.cues.filter((c) => c.op.kind === "motion" && (c.op as MotionOp).id === id && c.t <= t && c.end > t).pop();
+    const line = this.compiled.frame.motionByProp.get(id);
+    const mo = line ? runningLast(line, t) : null;
     return mo ? motionOffset(mo.op as MotionOp, t - mo.t) : { dx: 0, dy: 0 };
   }
 
@@ -559,29 +570,34 @@ export class Stage {
     return cue?.op.kind === "camera" && cue.op.mode === "track" && cue.op.follow ? cue.op.follow : null;
   }
 
+  /**
+   * Where the eye is at `t`. The old read `filter`ed a fresh camera list every frame and then walked
+   * all of it; this asks `framingAt` for the two indexes the walk would have stopped at and reads those
+   * two cues.
+   *
+   * `settled` is not just an optimization for the common case: it is the frame the tape landed *before*
+   * the glide the clock is inside, and the one landed after it stays unread — which is exactly what the
+   * old loop's `break`/`return` did, and what keeps a future cut from pulling the picture backward.
+   */
   private cameraAt(t: number): Box {
-    const cues = this.compiled.cues.filter((c) => c.op.kind === "camera" || c.op.kind === "transition");
-    let rect = this.rect;
-    let follow: string | null = null;
-    for (const c of cues) {
-      if (c.end <= t) {
-        rect = c.to;
-        follow = this.followed(c);
-        continue;
-      }
-      if (c.t > t) break;
-      const op = c.op as { duration: number; easing: string };
-      const p = Math.min(1, Math.max(0, (t - c.t) / Math.max(c.end - c.t, 1)));
-      const from = this.live && this.camFrom && this.camFromAt <= c.t ? this.camFrom : c.from;
-      if (!this.camFrom || this.camFromAt !== c.t) {
-        this.camFrom = from;
-        this.camFromAt = c.t;
-      }
-      follow = this.followed(c) ?? follow;
-      const glide = lerpBox(from, c.to, (EASES[op.easing] ?? EASES.ease)(p));
-      return this.ride(glide, follow, t);
+    const line = this.compiled.frame.framing;
+    const { settled, running } = framingAt(line, t);
+    if (running < 0) {
+      const c = settled < 0 ? undefined : line.cues[settled];
+      return this.ride(c ? c.to : this.rect, this.followed(c), t);
     }
-    return this.ride(rect, follow, t);
+    const c = line.cues[running];
+    const op = c.op as { duration: number; easing: string };
+    const p = Math.min(1, Math.max(0, (t - c.t) / Math.max(c.end - c.t, 1)));
+    const from = this.live && this.camFrom && this.camFromAt <= c.t ? this.camFrom : c.from;
+    if (!this.camFrom || this.camFromAt !== c.t) {
+      this.camFrom = from;
+      this.camFromAt = c.t;
+    }
+    const settledCue = settled < 0 ? undefined : line.cues[settled];
+    const follow = this.followed(c) ?? this.followed(settledCue);
+    const glide = lerpBox(from, c.to, (EASES[op.easing] ?? EASES.ease)(p));
+    return this.ride(glide, follow, t);
   }
 
   private ride(rect: Box, follow: string | null, t: number): Box {
@@ -594,16 +610,17 @@ export class Stage {
    * The last transition the clock has walked through the veil of, if any: `flip` is the instant it
    * swept (the veil's midpoint, where the figure covers the frame, so nothing pops out from under a
    * transparent wipe) and `board` is where it landed.
+   *
+   * `flips` is non-decreasing — a transition owns the clock, so the next one starts where this one ends,
+   * and the midpoint of one cut cannot land after the start of the next. That makes the answer one
+   * subtraction instead of the old walk over every cue in the show, and this was called once per prop
+   * list read, i.e. twice a frame.
    */
   private cutAt(t: number): Cut | null {
-    let cut: Cut | null = null;
-    for (const c of this.compiled.cues) {
-      if (c.op.kind !== "transition") continue;
-      const flip = c.t + (c.end - c.t) / 2;
-      if (flip > t) break;
-      cut = { flip, board: c.op.to };
-    }
-    return cut;
+    const { cuts, flips } = this.compiled.frame;
+    const i = upperBound(flips, t) - 1;
+    if (i < 0) return null;
+    return { flip: flips[i], board: (cuts.cues[i].op as TransitionOp).to };
   }
 
   /**
@@ -616,20 +633,35 @@ export class Stage {
     return !!cut && rev.t < cut.flip && rev.scene !== cut.board;
   }
 
+  /** The revision standing on the board at `t`, unless a cut has swept it off. */
+  private standingAt(p: Prop, t: number, cut: Cut | null): Revision | undefined {
+    const rev = revisionAt(p, t);
+    return rev && !this.swept(rev, cut) ? rev : undefined;
+  }
+
   /**
    * Can the audience see this name at `t` — a prop painted by then and not swept off, or a board with
    * such a prop on it. Read off the revisions standing at `t`, exactly as `visibleProps` paints them.
+   *
+   * "Some other board has a prop on it" used to walk the whole prop table. `Compiled.sceneProps` is that
+   * question answered once per recompile, so a director's `camera fit 一整块板` costs a lookup.
+   *
+   * One deliberate non-fix, so the index cannot quietly smuggle in a semantic change: neither the old
+   * read nor this one asks `discardedAt`, even though `visibleProps` does. The probe caught that
+   * difference and `docs/iteration-frame-read.md` records it as the next hole; here the answer must be
+   * the same one the tape gave before.
    */
   visibleName(id: string, t: number): boolean {
+    const c = this.compiled;
     const cut = this.cutAt(t);
-    const standing = (p: Prop): Revision | undefined => {
-      const onStage = p.revisions.filter((r) => r.t <= t);
-      const rev = onStage[onStage.length - 1];
-      return rev && !this.swept(rev, cut) ? rev : undefined;
-    };
-    const named = this.compiled.props.get(id);
-    if (named && standing(named)) return true;
-    return [...this.compiled.props.values()].some((p) => p.id !== id && standing(p)?.scene === id);
+    const named = c.props.get(id);
+    if (named && this.standingAt(named, t, cut)) return true;
+    for (const p of c.sceneProps.get(id) ?? []) {
+      // A candidate, not an answer: the board it is *standing* on at `t` is what the audience can see.
+      const rev = this.standingAt(p, t, cut);
+      if (rev && rev.scene === id) return true;
+    }
+    return false;
   }
 
   /** The board the show is standing on at `t`, or null before its first cut. */
@@ -639,18 +671,38 @@ export class Stage {
 
   private visibleProps(t: number): VisibleProp[] {
     const out: VisibleProp[] = [];
+    const c = this.compiled;
     const cut = this.cutAt(t);
-    const highlights = this.compiled.cues.filter((c) => c.op.kind === "highlight" && c.t <= t && c.end > t);
-    const motions = this.compiled.cues.filter((c) => c.op.kind === "motion" && c.t <= t && c.end > t);
-    for (const p of this.compiled.props.values()) {
-      const revs = p.revisions.filter((r) => r.t <= t);
-      if (revs.length === 0) continue;
+    /*
+     * The two overlay lines, read once into a table instead of once per prop. The old code ran
+     * `cues.filter(...)` twice and then `highlights.find`/`motions.filter(...).pop()` *inside* the prop
+     * loop — so a frame paid for the tape once per cell on it.
+     *
+     * `windowOf` is "started and not known finished", so the highlight/motion pairs are found in the same
+     * handful of cues the old filter kept; first/last wins are preserved by the direction each walk goes.
+     */
+    const hl = new Map<string, string>();
+    const { from, to } = windowOf(c.frame.highlights, t);
+    for (let i = from; i < to; i++) {
+      const cue = c.frame.highlights.cues[i];
+      if (cue.end <= t) continue; // the window is a bound; the old filter asked the cue itself
+      const op = cue.op as HighlightOp;
+      if (hl.has(op.target)) continue; // the old `find`: the earliest running highlight wins
+      hl.set(op.target, op.style);
+    }
+    const { props, reach } = c.frame.staged;
+    // Props past the bound had no revision at `t` — the old loop built a filtered array to learn that.
+    const landed = upperBound(reach, t);
+    for (let i = 0; i < landed; i++) {
+      const p = props[i];
       if (p.discardedAt !== undefined && p.discardedAt <= t) continue;
-      const rev: Revision = revs[revs.length - 1];
+      const rev = revisionAt(p, t);
+      if (!rev) continue;
       if (this.swept(rev, cut)) continue;
-      const hl = highlights.find((h) => (h.op as { target: string }).target === p.id);
       const pv = this.preview.get(p.id);
-      const mo = motions.filter((m) => (m.op as MotionOp).id === p.id).pop();
+      const line = c.frame.motionByProp.get(p.id);
+      // The old `filter(...).pop()`: the last motion running here, which is the window's tail.
+      const mo = line ? runningLast(line, t) : null;
       const box = displaced(pv?.box ?? rev.box, mo ? motionOffset(mo.op as MotionOp, t - mo.t) : { dx: 0, dy: 0 });
       // Delivery is read off the tape, never off the tape head: a drawing still streaming in is a
       // promise, so the caption for it waits. The outline below is the other question — is anything
@@ -668,7 +720,7 @@ export class Stage {
         note: rev.note,
         draft: !painted(rev),
         awaiting: this.artFor.has(p.id) && !painted(streaming) && overlaps(box, this.rect),
-        highlight: hl ? (hl.op as { style: string }).style : undefined,
+        highlight: hl.get(p.id),
       });
     }
     for (const [id, pv] of this.preview) {
@@ -690,12 +742,14 @@ export class Stage {
 
   private render(): RenderState {
     const t = this.t;
+    const c = this.compiled;
     this.rect = this.cameraAt(t);
     const props = this.visibleProps(t);
     this.owed = this.owedAt(t) || (this.playing ? this.blockedBy : 0);
     this.artWait = this.playing && this.owed > 0;
-    const narr = this.compiled.cues.filter((c) => c.op.kind === "narrate" && c.t <= t && c.end > t).pop();
-    const veil = this.compiled.cues.filter((c) => c.op.kind === "transition" && c.t <= t && c.end > t).pop();
+    // The line and the veil: the old read built two more filtered arrays per frame.
+    const narr = runningLast(c.frame.narrate, t);
+    const veil = runningLast(c.frame.cuts, t);
     return {
       t,
       duration: this.compiled.duration,
@@ -727,42 +781,98 @@ export class Stage {
     };
   }
 
-  /** What the teacher model is allowed to see about the stage: geometry + identity, never SVG source. */
+  /**
+   * What the teacher model is allowed to see about the stage: geometry + identity, never SVG source.
+   *
+   * And it has to stay a *summary*. This string is re-read every director turn and rides in the
+   * transcript as a tool result, so an unbounded one is the same hole `budget.ts` just closed from the
+   * other side: a long lesson either pushes its own context over the ceiling or gets deflated to a
+   * pointer — and a deflated `<stage>` is worse than a short one, because the director then re-performs
+   * lines that were already spoken and repaints frames the audience can already see.
+   *
+   * So the report holds what the clock can act on: the frame under the playhead, the board being
+   * stood on, the cells actually in front of the audience, and the last few lines spoken. Everything
+   * folded away is *counted*, never dropped silently, and each fold names the tool that reads it back
+   * (`fetch_prop`) — the tape is still the memory; this is only the window onto it.
+   */
   agentSnapshot(): string {
     const c = this.compiled;
-    const cut = this.cutAt(this.t);
+    const t = this.t;
+    const cut = this.cutAt(t);
     const board = cut?.board ?? null;
+    /*
+     * What is moving under the playhead. The old read walked the whole cue list for this; one window
+     * over `frame.motions` is the same answer — `end > t` re-applied, because the bound is a bound.
+     */
     const moving = new Map<string, string>();
-    for (const q of c.cues) {
-      if (q.op.kind === "motion" && q.t <= this.t && q.end > this.t) moving.set(q.op.id, q.op.mode);
+    const mw = windowOf(c.frame.motions, t);
+    for (let i = mw.from; i < mw.to; i++) {
+      const cue = c.frame.motions.cues[i];
+      if (cue.end <= t) continue;
+      const op = cue.op as MotionOp;
+      moving.set(op.id, op.mode);
     }
-    const live = [...c.props.values()]
-      .filter((p) => p.discardedAt === undefined || p.discardedAt > this.t)
-      .filter((p) => p.revisions.length > 0)
-      .map((p) => {
-        const r = p.revisions[p.revisions.length - 1];
-        const off = this.swept(r, cut) ? "·已被换场扫走（recall 才带得回来）" : "";
-        return `  ${p.id} [${p.scene}${off}] ${r.label} @(${Math.round(r.box.x)},${Math.round(r.box.y)} ${Math.round(r.box.w)}x${Math.round(r.box.h)})${r.scene3d ? ` [3D${r.scene3d.interactive ? "·可拖" : ""}]` : ""}${moving.has(p.id) ? ` moving:${moving.get(p.id)}(anchor stands)` : ""}${p.links.length ? ` links:${p.links.map((l) => l.relation + "->" + l.to).join(",")}` : ""}`;
-      })
-      .join("\n");
-    const scenes = [...c.scenes.entries()].map(([s, b]) => `${s}=(${Math.round(b.x)},${Math.round(b.y)} ${Math.round(b.w)}x${Math.round(b.h)})`).join(" ");
+
+    const listed: string[] = [];
+    let swept = 0;
+    let offFrame = 0;
+    let overCap = 0;
+    for (const p of c.frame.staged.props) {
+      if (p.discardedAt !== undefined && p.discardedAt <= t) continue;
+      const r = revisionAt(p, t);
+      // Not on the board yet: the same rule that keeps a name only `link`ed out of here.
+      if (!r) continue;
+      if (this.swept(r, cut)) {
+        swept++;
+        continue;
+      }
+      // Which thing folded it away matters to the reader: only one of these three is fixed by panning.
+      if (!overlaps(r.box, this.rect)) {
+        offFrame++;
+        continue;
+      }
+      if (listed.length >= MAX_SNAPSHOT_PROPS) {
+        overCap++;
+        continue;
+      }
+      listed.push(
+        `  ${p.id} [${p.scene}] ${r.label} @(${Math.round(r.box.x)},${Math.round(r.box.y)} ${Math.round(r.box.w)}x${Math.round(r.box.h)})${r.scene3d ? ` [3D${r.scene3d.interactive ? "·可拖" : ""}]` : ""}${moving.has(p.id) ? ` moving:${moving.get(p.id)}(anchor stands)` : ""}${p.links.length ? ` links:${p.links.map((l) => l.relation + "->" + l.to).join(",")}` : ""}`,
+      );
+    }
+    const why = [
+      swept ? `${swept} 格已被换场扫走（recall 才带得回来）` : "",
+      offFrame ? `${offFrame} 格在镜头框外（pan/fit 才看得见，或 fetch_prop 直接读几何）` : "",
+      overCap ? `${overCap} 格就在框内，只是这一屏只列 ${MAX_SNAPSHOT_PROPS} 格（剩下的 fetch_prop 一格一格读）` : "",
+    ]
+      .filter(Boolean)
+      .join("，");
+    const folded = swept + offFrame + overCap === 0 ? "" : `  …台上还有 ${swept + offFrame + overCap} 格没列出来：${why}。`;
+    const live = [listed.join("\n"), folded].filter(Boolean).join("\n");
+
+    const scenes = boardScenes(c, this.rect, board);
     const gate = this.currentGate();
-    const staged = c.beats
-      .map((b, i) => ({ b, i }))
-      .filter(({ b }) => b.headline)
-      .map(({ b, i }) => `  ${i + 1}. ${b.headline.slice(0, 46)} (${Math.round(b.start)}–${Math.round(b.end)}ms)`)
+    // The beats the director must not re-lay. Only the tail is listed; the ones before it are counted,
+    // and where they stop is the one number the next line actually needs.
+    const spoken = c.beats.filter((b) => b.headline);
+    const shown = spoken.slice(-MAX_SNAPSHOT_BEATS);
+    const earlier = spoken.length - shown.length;
+    const staged = [
+      earlier > 0 ? `  …前面还有 ${earlier} 拍说过了（从 ${Math.round(c.beats[0]?.end ?? 0)}ms 之后折成一句 —— 那一拍之前的台词都不必再读）` : "",
+      ...shown.map((b, i) => `  ${earlier + i + 1}. ${b.headline.slice(0, 46)} (${Math.round(b.start)}–${Math.round(b.end)}ms)`),
+    ]
+      .filter(Boolean)
       .join("\n");
     return [
       // The rect, not just its centre: to build in the empty space the camera just slid to, the
       // director has to know what is inside the frame, and a centre point alone can't be placed in.
-      `stage clock: ${Math.round(this.t)}ms / ${Math.round(c.duration)}ms, camera sees=(${Math.round(this.rect.x)},${Math.round(this.rect.y)} ${Math.round(this.rect.w)}x${Math.round(this.rect.h)}) zoom=${(1600 / this.rect.w).toFixed(2)}`,
+      `stage clock: ${Math.round(t)}ms / ${Math.round(c.duration)}ms, camera sees=(${Math.round(this.rect.x)},${Math.round(this.rect.y)} ${Math.round(this.rect.w)}x${Math.round(this.rect.h)}) zoom=${(1600 / this.rect.w).toFixed(2)}`,
       board
         ? `standing on board「${board}」— 换场会扫板：这一刀之前落下的东西，只有属于这块板的观众还看得见。要用别的板上的道具只有 recall 带过来；不写 scene 的 build 就落在脚下这块板，写了 scene 是把它挪到那块板上。接着讲同一块板用 pan，别用 transition。`
         : "还没换过场：台上就是一整张无限画布，换场前的东西全都还在眼前。不写 scene 的 build 落在脚下。要开新思路就 pan 一屏到空白处落笔，那不算是换场。",
-      `scenes: ${scenes || "-"}`,
+      `scenes: ${scenes}`,
       `props on file (source not shown; fetch_prop to recall it):`,
       live || "  (empty)",
-      c.beats.length > 1
+      spoken.length > 1
         ? `beats already on the tape — these lines have been spoken, do not re-lay them, continue from where they stop:\n${staged}`
         : "",
       gate ? `WAITING ON LEARNER: ${JSON.stringify(gate.op)}` : "no open question",
@@ -770,4 +880,30 @@ export class Stage {
       .filter(Boolean)
       .join("\n");
   }
+}
+
+/** How many cells the `<stage>` may name. A frame that holds more than this is a wall, not a shot. */
+const MAX_SNAPSHOT_PROPS = 40;
+
+/** How many beats the `<stage>` may quote. Older lines are counted; the director continues from the tail. */
+const MAX_SNAPSHOT_BEATS = 12;
+
+/**
+ * The boards worth naming to the director: the one he is standing on, and the ones with something
+ * inside the current frame.
+ *
+ * This used to print every board the lesson had ever put a foot on, because the scene map grows with
+ * the show. A director cannot act on a coordinate list that outlives the screen — and once the lesson
+ * has walked a few dozen boards, the list is the part that blows the budget. `n boards off view` says
+ * the rest, and `transition`/`recall` reach them by name anyway.
+ */
+function boardScenes(c: Compiled, rect: Box, board: string | null): string {
+  const named: string[] = [];
+  let off = 0;
+  for (const [name, b] of c.scenes) {
+    if (name === board || overlaps(b, rect)) named.push(`${name}=(${Math.round(b.x)},${Math.round(b.y)} ${Math.round(b.w)}x${Math.round(b.h)})`);
+    else off++;
+  }
+  if (off > 0) named.push(`…另有 ${off} 块板不在视野里（按名字 transition 过去就行）`);
+  return named.join(" ") || "-";
 }
