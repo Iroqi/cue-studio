@@ -65,6 +65,60 @@ export function centerOf(b: Box): { x: number; y: number } {
   return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
 }
 
+/**
+ * 这一刻这一格站不站着：它的窗口 `[t, off)` 盖住这一刻。
+ *
+ * 撤下以前是道具身上的**一个数**（`discardedAt`）：会被后一刀覆盖，也会被重画顺手清空。所以一条
+ * "撤下 → 重新落下 → 再撤下"的带子只留下最后那一刀，倒带回到第一刀之前的人于是看见一件早就被他撤
+ * 掉的东西又站回台上，而旁白还指着它讲。磁带是只增不改的，"此刻有什么"必须由时刻算出来：一次外观是
+ * 一段窗口，和 `Cue` 的 `t`/`end` 是同一件东西 —— 词汇里没有第二套名字。
+ *
+ * 换场（`swept`）是另一半，问的是"这块板还在不在眼前"，由读它的人一帧问一次，不进这一条。
+ *
+ * `t = Infinity` 就是"到带子尽头"：编译期量一板的地皮用它 —— 那正是旧写法 `discardedAt === undefined`
+ * 在问的事，只是它当时按"现在"答，答不了"回到十分钟前"。
+ */
+export function onstageAt(rev: Revision | undefined, t: number): boolean {
+  return !!rev && rev.t <= t && !(rev.off !== undefined && rev.off <= t);
+}
+
+/**
+ * 道具在 `t` 这一刻站着的那一次外观：倒着找第一条窗口还盖得住这一刻的。
+ *
+ * 和"筛完整列再取最后一格"同解，只是不每帧复制一份外观表。
+ */
+export function standingAt(revisions: Revision[], t: number): Revision | undefined {
+  for (let i = revisions.length - 1; i >= 0; i--) {
+    if (onstageAt(revisions[i], t)) return revisions[i];
+  }
+  return undefined;
+}
+
+/**
+ * 落下新的一次外观，顺手把上一次那段窗口收在这一刻。
+ *
+ * 同一个道具的窗口因此**铺满**时间线：不重叠、按 `t` 递增，下一件才二分得动。填占位符那一笔不走这里
+ * —— 它把最后一格原地换掉（"描述它的那句已经念完了，图才补上"是同一段窗口，不是新的一格），否则两条
+ * 同样 `t` 的窗口并排站着，二分出来的区间会退化到表头，一帧把整板重走一遍。
+ */
+export function layRevision(p: Prop, rev: Revision): void {
+  const prev = p.revisions.length ? p.revisions[p.revisions.length - 1] : undefined;
+  if (prev && prev.off === undefined && prev.t <= rev.t) prev.off = rev.t;
+  p.revisions.push(rev);
+}
+
+/**
+ * `discard` 落在道具身上：给**此刻站着的那一次外观**盖上结束时刻。
+ *
+ * 已经收过就不动 —— 一个名字不会因为在带子上被多念了一刀就更消失一次；而重画（`build`/`patch`）
+ * 落下的是新的一次外观，它自带一个新窗口。所以 `recall` 那份 `{...prev}` 必须抹掉 `off`：原样抄
+ * 过来就是"带回来的东西一上台就已经是撤着的"。
+ */
+export function markOff(revisions: Revision[], at: number): void {
+  const standing = standingAt(revisions, at);
+  if (standing && standing.off === undefined) standing.off = at;
+}
+
 function padded(b: Box, f = 1.25): Box {
   const c = centerOf(b);
   return { x: c.x - (b.w * f) / 2, y: c.y - (b.h * f) / 2, w: b.w * f, h: b.h * f };
@@ -101,10 +155,15 @@ function propBox(props: Map<string, Prop>, id: string): Box | undefined {
 }
 
 function sceneBox(props: Map<string, Prop>, scene: string): Box | undefined {
-  const boxes = [...props.values()]
-    .filter((p) => p.scene === scene && p.discardedAt === undefined)
-    .map((p) => propBox(props, p.id))
-    .filter((b): b is Box => !!b);
+  const boxes: Box[] = [];
+  for (const p of props.values()) {
+    if (p.scene !== scene) continue;
+    // 量地皮问的是"到带子尽头这块板上还有什么"，正是旧写法 `discardedAt === undefined` 想问的事。
+    const last = p.revisions[p.revisions.length - 1];
+    if (!onstageAt(last, Infinity)) continue;
+    const b = last ? propBox(props, p.id) : undefined;
+    if (b) boxes.push(b);
+  }
   return boxes.length ? unionBox(boxes) : undefined;
 }
 
@@ -370,6 +429,10 @@ export function compile(entries: OpEntry[]): Compiled {
         const box = op.kind === "build" ? placedBox(op.box, op.here, i, p.scene) : op.box ?? prev?.box ?? { ...VIEWPORT };
         const revision: Revision = {
           t: fillingPlaceholder ? prev.t : start,
+          // `patch` 是给已经站在台上的东西交图，不是把它带回台上 —— 带回台上是 `recall`。所以已经收掉的
+          // 那段窗口该由它自己带着：美工迟到的那一笔落在撤下之后，不许让一件导演已经撤掉的东西复活。
+          // 迟到的图没有丢，它就在这段收掉的窗口里，`recall` 带的正是它。
+          off: op.kind === "patch" ? prev?.off : undefined,
           scene: p.scene,
           box,
           svg: op.svg ?? (op.kind === "patch" ? prev?.svg : undefined),
@@ -381,8 +444,7 @@ export function compile(entries: OpEntry[]): Compiled {
           partial: !(op.svg || op.html || op.scene3d),
         };
         if (fillingPlaceholder) p.revisions[p.revisions.length - 1] = revision;
-        else p.revisions.push(revision);
-        p.discardedAt = undefined;
+        else layRevision(p, revision);
         break;
       }
       case "recall": {
@@ -390,13 +452,15 @@ export function compile(entries: OpEntry[]): Compiled {
         if (!src || src.revisions.length === 0) break;
         const prev = src.revisions[src.revisions.length - 1];
         src.scene = op.scene || standing || "default";
-        src.revisions.push({ ...prev, t: start, scene: src.scene, box: placedBox(op.box, op.here, i, src.scene) });
-        src.discardedAt = undefined;
+        // `off: undefined` 不是装饰：`{...prev}` 会把上一次站着的外观那"已经收掉"的时刻一起抄过来，
+        // 于是 recall 带回台上的东西一落地就是撤着的 —— 道具闪一下然后消失，而带子上没有第二刀
+        // discard。一次 recall 就是一次新的落笔，它自带一个新窗口。
+        layRevision(src, { ...prev, t: start, off: undefined, scene: src.scene, box: placedBox(op.box, op.here, i, src.scene) });
         break;
       }
       case "discard": {
         const p = props.get(op.id);
-        if (p) p.discardedAt = start;
+        if (p) markOff(p.revisions, start);
         break;
       }
       case "link": {

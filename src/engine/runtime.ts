@@ -1,9 +1,9 @@
-import { compile } from "./compile";
+import { compile, standingAt } from "./compile";
 import { MAIN_TRACK, OpLog } from "./log";
-import { TapeIndex, revisionAt } from "./frame";
+import { TapeIndex } from "./frame";
 import { displaced, motionOffset } from "./motion";
 import { SETTLE_MS } from "./speech";
-import type { Box, Compiled, Cue, Gate, MotionOp, Op, OpEntry, Prop, Revision, Scene3DSpec, TrackId } from "./types";
+import type { Box, Compiled, Cue, Gate, MotionOp, Op, OpEntry, Revision, Scene3DSpec, TrackId } from "./types";
 
 /** A cut the clock has already walked through the veil of. */
 type Cut = { flip: number; board: string };
@@ -504,8 +504,7 @@ export class Stage {
     const cut = this.cutAt(t);
     let n = 0;
     for (const p of this.compiled.props.values()) {
-      if (p.discardedAt !== undefined && p.discardedAt <= t) continue;
-      const rev = revisionAt(p.revisions, t);
+      const rev = standingAt(p.revisions, t);
       if (!rev) continue;
       if (this.swept(rev, cut)) continue;
       if (!painted(rev) && inThisBeat(rev.t) && (this.turnOpen || !this.painting.has(p.id))) n++;
@@ -620,18 +619,19 @@ export class Stage {
   }
 
   /**
-   * Can the audience see this name at `t` — a prop painted by then and not swept off, or a board with
-   * such a prop on it. Read off the revisions standing at `t`, exactly as `visibleProps` paints them.
+   * Can the audience see this name at `t` — a prop standing there, not swept off, or a board with such
+   * a prop on it. Read off the same answer `visibleProps` paints from, because the two used to disagree:
+   * this one never looked at `discard`, so a camera that named a freshly-retired prop got told "the
+   * audience has it", moved nowhere, and the turn read that silence as a cut that happened.
    */
   visibleName(id: string, t: number): boolean {
     const cut = this.cutAt(t);
-    const standing = (p: Prop): Revision | undefined => {
-      const rev = revisionAt(p.revisions, t);
-      return rev && !this.swept(rev, cut) ? rev : undefined;
-    };
-    const named = this.compiled.props.get(id);
-    if (named && standing(named)) return true;
-    return [...this.compiled.props.values()].some((p) => p.id !== id && standing(p)?.scene === id);
+    for (const p of this.compiled.props.values()) {
+      const rev = standingAt(p.revisions, t);
+      if (!rev || this.swept(rev, cut)) continue;
+      if (p.id === id || rev.scene === id) return true;
+    }
+    return false;
   }
 
   /** The board the show is standing on at `t`, or null before its first cut. */
@@ -648,9 +648,8 @@ export class Stage {
     const cut = this.cutAt(t);
     const highlights = this.index.highlightsAt(t);
     for (const p of this.compiled.props.values()) {
-      const rev = revisionAt(p.revisions, t);
+      const rev = standingAt(p.revisions, t);
       if (!rev) continue;
-      if (p.discardedAt !== undefined && p.discardedAt <= t) continue;
       if (this.swept(rev, cut)) continue;
       const style = highlights.get(p.id);
       const pv = this.preview.get(p.id);
@@ -733,24 +732,30 @@ export class Stage {
     };
   }
 
-  /** What the teacher model is allowed to see about the stage: geometry + identity, never SVG source. */
+  /**
+   * What the teacher model is allowed to see about the stage: geometry + identity, never SVG source.
+   *
+   * 它读的是**播放头站着的那一刻**，不是带子尽头。这条以前是"最新一次外观"：学习者倒回三分钟前、
+   * 导演在那一刻接上一句，快照就把还没落下的图报给他 —— 他照着"台上明明有的东西"发一刀 fit，画面
+   * 一动不动，还以为是自己的镜头写错了。导演能看见的台，必须是观众此刻能看见的那一台。
+   */
   agentSnapshot(): string {
     const c = this.compiled;
-    const cut = this.cutAt(this.t);
+    const t = this.t;
+    const cut = this.cutAt(t);
     const board = cut?.board ?? null;
-    const moving = new Map<string, string>();
-    for (const q of c.cues) {
-      if (q.op.kind === "motion" && q.t <= this.t && q.end > this.t) moving.set(q.op.id, q.op.mode);
+    const live: string[] = [];
+    // 一次遍历答完三件事：站着什么、什么正在动、被换场扫走的还剩几格。索引按道具给运动，
+    // 所以"正在动"不再需要把整条 cue 表走一遍。
+    for (const p of c.props.values()) {
+      const r = standingAt(p.revisions, t);
+      if (!r) continue;
+      const mo = this.index.motionFor(p.id, t);
+      const off = this.swept(r, cut) ? "·已被换场扫走（recall 才带得回来）" : "";
+      live.push(
+        `  ${p.id} [${r.scene}${off}] ${r.label} @(${Math.round(r.box.x)},${Math.round(r.box.y)} ${Math.round(r.box.w)}x${Math.round(r.box.h)})${r.scene3d ? ` [3D${r.scene3d.interactive ? "·可拖" : ""}]` : ""}${mo ? ` moving:${(mo.op as MotionOp).mode}(anchor stands)` : ""}${p.links.length ? ` links:${p.links.map((l) => l.relation + "->" + l.to).join(",")}` : ""}`,
+      );
     }
-    const live = [...c.props.values()]
-      .filter((p) => p.discardedAt === undefined || p.discardedAt > this.t)
-      .filter((p) => p.revisions.length > 0)
-      .map((p) => {
-        const r = p.revisions[p.revisions.length - 1];
-        const off = this.swept(r, cut) ? "·已被换场扫走（recall 才带得回来）" : "";
-        return `  ${p.id} [${p.scene}${off}] ${r.label} @(${Math.round(r.box.x)},${Math.round(r.box.y)} ${Math.round(r.box.w)}x${Math.round(r.box.h)})${r.scene3d ? ` [3D${r.scene3d.interactive ? "·可拖" : ""}]` : ""}${moving.has(p.id) ? ` moving:${moving.get(p.id)}(anchor stands)` : ""}${p.links.length ? ` links:${p.links.map((l) => l.relation + "->" + l.to).join(",")}` : ""}`;
-      })
-      .join("\n");
     const scenes = [...c.scenes.entries()].map(([s, b]) => `${s}=(${Math.round(b.x)},${Math.round(b.y)} ${Math.round(b.w)}x${Math.round(b.h)})`).join(" ");
     const gate = this.currentGate();
     const staged = c.beats
@@ -767,7 +772,7 @@ export class Stage {
         : "还没换过场：台上就是一整张无限画布，换场前的东西全都还在眼前。不写 scene 的 build 落在脚下。要开新思路就 pan 一屏到空白处落笔，那不算是换场。",
       `scenes: ${scenes || "-"}`,
       `props on file (source not shown; fetch_prop to recall it):`,
-      live || "  (empty)",
+      live.join("\n") || "  (empty)",
       c.beats.length > 1
         ? `beats already on the tape — these lines have been spoken, do not re-lay them, continue from where they stop:\n${staged}`
         : "",
