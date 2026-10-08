@@ -1,6 +1,7 @@
-import { compile, standingAt } from "./compile";
+import { compile } from "./compile";
 import { MAIN_TRACK, OpLog } from "./log";
 import { TapeIndex } from "./frame";
+import { StandingIndex } from "./standing";
 import { displaced, motionOffset } from "./motion";
 import { SETTLE_MS } from "./speech";
 import type { Box, Compiled, Cue, Gate, MotionOp, Op, OpEntry, Revision, Scene3DSpec, TrackId } from "./types";
@@ -84,9 +85,14 @@ export class Stage {
   /*
    * 带子的位置索引跟着带子走：一次重排建一份，一帧只问二分。它不重新解释任何东西 —— 拿的就是
    * 上面那两份 `Compiled`，所以"索引算错了"和"解释器算错了"不会混成一处。
+   *
+   * `StandingIndex` 是同一件事的另一半：cue 表那边走的是"这一刻哪一格还在跑"，道具那边走的是"这一刻
+   * 什么站在台上"。它读的也是上面那两份 `Compiled` 里的外观，所以它对账的对象和 `TapeIndex` 是同一个。
    */
   private indexMain = new TapeIndex(this.compiledMain);
   private indexAside: TapeIndex | null = null;
+  private standingMain = new StandingIndex(this.compiledMain);
+  private standingAside: StandingIndex | null = null;
   private preview = new Map<string, { box: Box; svg?: string; html?: string; css?: string; label: string; scene: string }>();
   private listeners = new Set<() => void>();
   private snapshot: RenderState;
@@ -168,9 +174,11 @@ export class Stage {
   recompile() {
     this.compiledMain = compile(this.log.ofTrack(MAIN_TRACK));
     this.indexMain = new TapeIndex(this.compiledMain);
+    this.standingMain = new StandingIndex(this.compiledMain);
     const aside = this.log.asides()[this.log.asides().length - 1];
     this.compiledAside = aside ? compile(this.log.ofTrack(aside)) : null;
     this.indexAside = this.compiledAside ? new TapeIndex(this.compiledAside) : null;
+    this.standingAside = this.compiledAside ? new StandingIndex(this.compiledAside) : null;
     this.emit();
   }
 
@@ -213,6 +221,11 @@ export class Stage {
   /** 这一帧要问的那卷带子的索引，和上面那份 `Compiled` 同一卷。 */
   private get index(): TapeIndex {
     return this.track === MAIN_TRACK || !this.indexAside ? this.indexMain : this.indexAside;
+  }
+
+  /** 同上，站着的那一半：一帧问"此刻台上有几个"，不是"一共有过几个道具"。 */
+  private get standing(): StandingIndex {
+    return this.track === MAIN_TRACK || !this.standingAside ? this.standingMain : this.standingAside;
   }
 
   append(ops: Op[], track: TrackId = this.track): OpEntry[] {
@@ -503,11 +516,11 @@ export class Stage {
     // is walking onto belongs to the beats after the cut, not to the line being spoken now.
     const cut = this.cutAt(t);
     let n = 0;
-    for (const p of this.compiled.props.values()) {
-      const rev = standingAt(p.revisions, t);
-      if (!rev) continue;
-      if (this.swept(rev, cut)) continue;
-      if (!painted(rev) && inThisBeat(rev.t) && (this.turnOpen || !this.painting.has(p.id))) n++;
+    // 这一拍落的笔由索引二分出来，不是把整张道具表走一遍：旧写法连观众早就看不见的（换场扫走的、
+    // 已经撤下的、站在别的板上的）也要问一次"这一刻它站着吗"。
+    for (const s of this.standing.laidIn(start, end, t)) {
+      if (this.swept(s.rev, cut)) continue;
+      if (!painted(s.rev) && (this.turnOpen || !this.painting.has(s.prop.id))) n++;
     }
     // 在飞的画只问"它落在站着这一拍里吗"：道具表按 id 查，最新一次外观是一个下标，
     // 都不需要扫带子 —— 需要扫带子的那个问题（此刻站着哪一拍）上面已经二分掉了。
@@ -625,11 +638,8 @@ export class Stage {
    * audience has it", moved nowhere, and the turn read that silence as a cut that happened.
    */
   visibleName(id: string, t: number): boolean {
-    const cut = this.cutAt(t);
-    for (const p of this.compiled.props.values()) {
-      const rev = standingAt(p.revisions, t);
-      if (!rev || this.swept(rev, cut)) continue;
-      if (p.id === id || rev.scene === id) return true;
+    for (const { prop, rev } of this.standing.visible(t, this.cutAt(t))) {
+      if (prop.id === id || rev.scene === id) return true;
     }
     return false;
   }
@@ -640,17 +650,14 @@ export class Stage {
   }
 
   /**
-   * 台上这一刻有什么。强调叠层和运动都问索引（"此刻在跑的几格"），道具的外观倒着找第一条已经到的 ——
-   * 旧写法每格道具把整条带子筛两遍、再把自己的外观表复制两遍。带子再长，站着的格子只有几格。
+   * 台上这一刻有什么。强调叠层和运动都问索引（"此刻在跑的几格"），名单也问索引：游标走过落笔与收笔，
+   * 一帧只付"这一刻真的越过的事件"加"台上有几样东西"。旧写法每帧把整张道具表走一遍，把观众早就看不见
+   * 的那些也走 —— 一堂课长到几百格时，一帧的价钱就是"这堂课一共有过几个道具"。
    */
   private visibleProps(t: number): VisibleProp[] {
     const out: VisibleProp[] = [];
-    const cut = this.cutAt(t);
     const highlights = this.index.highlightsAt(t);
-    for (const p of this.compiled.props.values()) {
-      const rev = standingAt(p.revisions, t);
-      if (!rev) continue;
-      if (this.swept(rev, cut)) continue;
+    for (const { prop: p, rev } of this.standing.visible(t, this.cutAt(t))) {
       const style = highlights.get(p.id);
       const pv = this.preview.get(p.id);
       const mo = this.index.motionFor(p.id, t);
@@ -747,9 +754,7 @@ export class Stage {
     const live: string[] = [];
     // 一次遍历答完三件事：站着什么、什么正在动、被换场扫走的还剩几格。索引按道具给运动，
     // 所以"正在动"不再需要把整条 cue 表走一遍。
-    for (const p of c.props.values()) {
-      const r = standingAt(p.revisions, t);
-      if (!r) continue;
+    for (const { prop: p, rev: r } of this.standing.standing(t)) {
       const mo = this.index.motionFor(p.id, t);
       const off = this.swept(r, cut) ? "·已被换场扫走（recall 才带得回来）" : "";
       live.push(
