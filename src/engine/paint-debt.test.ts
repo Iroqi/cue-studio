@@ -99,3 +99,43 @@ describe("后台美工欠的每一格：拍边短停，画到时钟自己走", (
     expect(s.getSnapshot().gate?.kind).toBe("quiz");
   });
 });
+
+describe("换场扫走的那一格不欠时钟任何东西", () => {
+  /**
+   * `owedAt` 里那句 `swept` 是索引最容易漏的一半：那一格不在观众名单上（幕布已经盖过去了），改前却是
+   * 顺带对的 —— 那一遍走整张道具表，逐格问的是同一条规则。换成二分之后它成了一句独立的话，所以它可以
+   * 整句删掉而全套仍然绿：实测删掉那句 `continue`，改前那 182 条一条都不红。
+   *
+   * 补的两条钉在**时钟**上而不是名单上，因为这半条错法只有时钟表演得出来：观众已经不在那块板上了，
+   * 时钟却为一块他们再也看不见的空框把车停死在这一拍里，字幕栏上写"时钟等美工"，等的是永远不会看到的画。
+   */
+  const draft = (id: string, scene: string): Op => ({ kind: "build", id, scene, box: at(0, 0), label: id });
+  const cut = (to: string): Op => ({ kind: "transition", style: "dissolve", to, duration: 1200 });
+  // 草稿落在 0，紧接一刀切去乙：幕布 0..1200，`flip` 在 600，那一格欠的是换场这一拍的画。
+  function show(s: Stage) {
+    s.goLive();
+    s.append([draft("草稿", "甲"), cut("乙"), line("第二句在新板上说", 4000)], MAIN_TRACK);
+    s.setTurnOpen(true); // 轮还开着：没图的框就是一幅欠着的画
+  }
+
+  it("幕布还没盖过去：那块空框确实欠一幅画，时钟停在它前面", () => {
+    const s = new Stage();
+    show(s);
+    s.seek(300);
+    expect(s.getSnapshot().artOwed).toBeGreaterThan(0);
+    s.play();
+    step(s, 200);
+    // 这一条是下面那条的门：同一格、同一拍，只因为没到 `flip` 就该停车。
+    expect(s.t).toBe(300);
+  });
+
+  it("幕布盖过去之后：被这一刀扫走的那一格不再欠时钟", () => {
+    const s = new Stage();
+    show(s);
+    s.seek(700); // 已走过 `flip`：观众在乙板上，甲板上那块空框再也见不着了
+    expect(s.getSnapshot().artOwed).toBe(0);
+    s.play();
+    step(s, 200);
+    expect(s.t).toBe(900);
+  });
+});
