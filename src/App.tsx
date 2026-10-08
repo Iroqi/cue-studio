@@ -9,9 +9,9 @@ import { ModelConfig } from "./ui/ModelConfig";
 import { BeatRail } from "./ui/BeatRail";
 import { LearnerArchive } from "./ui/LearnerArchive";
 import { getModels, loadConfig, saveConfig, setScriptedResponses, type LlmConfig } from "./llm/llm";
-import type { OpEntry } from "./engine/types";
+import type { Gate, OpEntry } from "./engine/types";
 
-function describe(e: OpEntry, stage: Stage): string {
+function describe(e: OpEntry, gates: Map<number, Gate>): string {
   const o = e.op as unknown as Record<string, unknown> & { kind: string };
   const s = (k: string) => (typeof o[k] === "string" ? (o[k] as string) : "");
   const n = (k: string) => (typeof o[k] === "number" ? Math.round(o[k] as number) : "");
@@ -58,7 +58,7 @@ function describe(e: OpEntry, stage: Stage): string {
     case "quiz":
       return `提问：${s("prompt")}`;
     case "answer": {
-      const settled = o.gate !== undefined ? stage.compiled.gates.find((g) => g.seq === o.gate) : undefined;
+      const settled = typeof o.gate === "number" ? gates.get(o.gate) : undefined;
       const asked = settled?.op.kind === "quiz" ? settled.op.prompt : "";
       return `他答：「${s("text")}」${asked ? ` —— ${asked.slice(0, 24)}` : ""}`;
     }
@@ -80,6 +80,25 @@ const SAMPLES = ["向量加法与力的分解", "梯度下降为什么会往下�
 export default function App() {
   const stage = useMemo(() => new Stage(), []);
   const snap = useSyncExternalStore(stage.subscribe, stage.getSnapshot);
+  /*
+   * 指令日志是这卷带子的函数，不是时钟的函数：一秒钟走六十帧，带子只在有人演出的时候动。
+   * 以前每一帧都把整卷重排一遍，抽屉关着也照排（"关"只是个 CSS transform）：两千行一帧 82ms、
+   * 两万行 689ms。所以这里记住的是**排好的那些行** —— 只记住每行的文字不够，那样每帧还在重做
+   * 两千个元素；元素本身是同一批对象，React 拿到同一个引用才肯逐棵子树跳过。量完：两千行 0.9ms、
+   * 两万行 2.0ms，剩下那点钱是按引用比对一遍数组，不是重排。
+   */
+  const compiled = stage.compiled;
+  const logRows = useMemo(() => {
+    const bySeq = new Map(compiled.gates.map((g) => [g.seq, g]));
+    return stage.log
+      .all()
+      .map((e) => (
+        <div className={e.track === "main" ? "row" : "row aside"} key={e.seq}>
+          <em>{e.seq}</em>
+          <span>{describe(e, bySeq)}</span>
+        </div>
+      ));
+  }, [stage, compiled]);
   const narrator = useMemo(() => new Narrator(stage), [stage]);
   const [voiced, setVoiced] = useState(() => narrator.enabled);
   const [cfg, setCfg] = useState<LlmConfig>(() => loadConfig());
@@ -256,7 +275,8 @@ export default function App() {
   };
 
   const gate = snap.gate;  const isQuiz = gate?.kind === "quiz";
-  const liveTail = snap.live && snap.playing;
+  // The light follows the playhead, not the ownership: looking back at your own lesson dims it, and the lesson is still yours.
+  const liveTail = snap.following;
   const onto = !speaking;
   // A question can be queued while the clock is still walking up to its card; the turn is blocked on it
   // either way, so his words are an answer either way.
@@ -327,7 +347,7 @@ export default function App() {
               <input type="file" accept="application/json" onChange={(e) => e.target.files?.[0] && importLog(e.target.files[0])} />
             </label>
             <button
-              disabled={stage.log.all().length === 0}
+              disabled={stage.log.length === 0}
               title="把这一场的指令日志压进地址栏：链接就是这节课"
               onClick={() => void share()}
             >
@@ -463,12 +483,7 @@ export default function App() {
           </div>
           {tab === "log" ? (
             <div className="panel log">
-              {stage.log.all().map((e) => (
-                <div className={e.track === "main" ? "row" : "row aside"} key={e.seq}>
-                  <em>{e.seq}</em>
-                  <span>{describe(e, stage)}</span>
-                </div>
-              ))}
+              {logRows}
               {lines
                 .filter((l) => l.text.trim().length > 0)
                 .map((l, i) => (

@@ -1,103 +1,17 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { Tool } from "@earendil-works/pi-ai";
-import type { Box, MotionMode, NarrateOp, Op, Prim3, Scene3DSpec, Vec3 } from "../engine/types";
+import type { Box, MotionMode, NarrateOp, Op } from "../engine/types";
 import type { Stage } from "../engine/runtime";
 import { cueMs } from "../engine/compile";
+import { guardScene3 } from "../engine/guard";
 
 const MOTION_MODES = new Set(["oscillate", "approach", "orbit", "iterate", "flow"]);
 
-const PRIMITIVE_SHAPES = new Set<Prim3["shape"]>([
-  "box",
-  "sphere",
-  "cylinder",
-  "cone",
-  "torus",
-  "plane",
-  "line",
-  "arrow",
-]);
-/** A model that dumps thousands of primitives would melt the WebGL context; a teaching object never needs that many. */
-const MAX_PRIMS = 64;
-
-const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
-/** Exactly three finite numbers, else no vector — a half-filled pos is worse than none (interpreter falls back to origin). */
-const VEC3 = (v: unknown): Vec3 | undefined =>
-  Array.isArray(v) && v.length === 3 && v.every(isNum) ? [v[0], v[1], v[2]] : undefined;
-
-/**
- * A "sky" as dark as the board is a painter sneaking a second board in through the 3-D window: the
- * stage is already the backdrop, so the field is dropped and the board shows through the glass.
+/*
+ * The whitelist for 3-D specs lives in `engine/guard`, because the tape — not just this tool — can
+ * put a spec in front of the WebGL interpreter. It used to live here, which left the second door open.
  */
-function isBoardDark(hex: string): boolean {
-  const h = hex.slice(1);
-  const s = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  const [r, g, b] = [0, 2, 4].map((i) => parseInt(s.slice(i, i + 2), 16));
-  if (![r, g, b].every((v) => Number.isFinite(v))) return false;
-  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.16;
-}
-
-/**
- * Coerce whatever the director emitted into a Scene3DSpec. This is untrusted model output rendered by
- * WebGL, so every field is whitelisted and clamped: unknown shapes dropped, colors kept to short
- * #hex/named-safe strings, counts capped. The interpreter never receives raw markup here — only data.
- */
-export function scene3(v: unknown): Scene3DSpec | undefined {
-  if (!v || typeof v !== "object") return undefined;
-  const o = v as Record<string, unknown>;
-  const rawPrims = Array.isArray(o.prims) ? o.prims : [];
-  const prims: Prim3[] = [];
-  for (const r of rawPrims) {
-    if (!r || typeof r !== "object") continue;
-    const p = r as Record<string, unknown>;
-    if (typeof p.shape !== "string" || !PRIMITIVE_SHAPES.has(p.shape as Prim3["shape"])) continue;
-    const prim: Prim3 = { shape: p.shape as Prim3["shape"] };
-    if (isNum(p.size)) prim.size = p.size;
-    if (isNum(p.radius)) prim.radius = p.radius;
-    if (isNum(p.radius2)) prim.radius2 = p.radius2;
-    if (isNum(p.height)) prim.height = p.height;
-    const from = VEC3(p.from);
-    const to = VEC3(p.to);
-    if (from) prim.from = from;
-    if (to) prim.to = to;
-    const pos = VEC3(p.pos);
-    if (pos) prim.pos = pos;
-    const rot = VEC3(p.rot);
-    if (rot) prim.rot = rot;
-    if (typeof p.color === "string" && /^#[0-9a-fA-F]{3,8}$/.test(p.color)) prim.color = p.color;
-    if (p.wireframe === true) prim.wireframe = true;
-    if (isNum(p.opacity)) prim.opacity = Math.min(1, Math.max(0, p.opacity));
-    if (typeof p.label === "string") prim.label = p.label.slice(0, 120);
-    prims.push(prim);
-    if (prims.length >= MAX_PRIMS) break;
-  }
-
-  const spec: Scene3DSpec = { prims };
-  if (o.camera && typeof o.camera === "object") {
-    const c = o.camera as Record<string, unknown>;
-    const pos = VEC3(c.pos);
-    const look = VEC3(c.look);
-    const cam: NonNullable<Scene3DSpec["camera"]> = {};
-    if (pos) cam.pos = pos;
-    if (look) cam.look = look;
-    if (isNum(c.fov)) cam.fov = Math.min(120, Math.max(10, c.fov));
-    if (cam.pos || cam.look || cam.fov) spec.camera = cam;
-  }
-  if (o.spin && typeof o.spin === "object") {
-    const s = o.spin as Record<string, unknown>;
-    const spin: NonNullable<Scene3DSpec["spin"]> = {};
-    if (s.axis === "x" || s.axis === "y" || s.axis === "z") spin.axis = s.axis;
-    if (isNum(s.degPerSec)) spin.degPerSec = Math.min(360, Math.max(-360, s.degPerSec));
-    spec.spin = spin;
-  } else if (o.spin === true) {
-    spec.spin = { axis: "y", degPerSec: 24 };
-  }
-  if (o.interactive === true) spec.interactive = true;
-  if (o.grid === true) spec.grid = true;
-  if (o.axes === true) spec.axes = true;
-  if (typeof o.background === "string" && /^#[0-9a-fA-F]{3,8}$/.test(o.background) && !isBoardDark(o.background)) spec.background = o.background;
-  return spec;
-}
-
+const scene3 = guardScene3;
 
 const num = (d: string) => Type.Number({ description: d });
 const str = (d: string) => Type.String({ description: d });
@@ -281,6 +195,12 @@ export function directorTools(
       case "fetch_prop": {
         const p = stage.compiled.props.get(S(args.id));
         if (!p) return { ops, result: `no prop named ${S(args.id)}`, isError: true };
+        // A name the tape only ever *mentioned* (a `link` to something never built) is in the prop
+        // table with no frame at all. Reading it as a finished prop is what used to crash the turn:
+        // this is the second reader of `revisions.at(-1)`, and it answers straight into the director's
+        // context — so say what the tape actually holds instead of throwing.
+        if (p.revisions.length === 0)
+          return { ops, result: `${S(args.id)} 在道具表里，但带上还没有它的一帧：它只被 link 念到过名字，没有画面也没有位置。要么它还没上台（先 build/paint），要么这是拼错了。`, isError: true };
         const r = p.revisions[p.revisions.length - 1];
         return {
           ops,
