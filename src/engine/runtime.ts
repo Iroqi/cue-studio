@@ -1,5 +1,6 @@
-import { compile, ownsTime } from "./compile";
+import { compile } from "./compile";
 import { MAIN_TRACK, OpLog } from "./log";
+import { TapeIndex, revisionAt } from "./frame";
 import { displaced, motionOffset } from "./motion";
 import { SETTLE_MS } from "./speech";
 import type { Box, Compiled, Cue, Gate, MotionOp, Op, OpEntry, Prop, Revision, Scene3DSpec, TrackId } from "./types";
@@ -80,6 +81,12 @@ export class Stage {
   readonly log = new OpLog();
   private compiledMain: Compiled = compile([]);
   private compiledAside: Compiled | null = null;
+  /*
+   * 带子的位置索引跟着带子走：一次重排建一份，一帧只问二分。它不重新解释任何东西 —— 拿的就是
+   * 上面那两份 `Compiled`，所以"索引算错了"和"解释器算错了"不会混成一处。
+   */
+  private indexMain = new TapeIndex(this.compiledMain);
+  private indexAside: TapeIndex | null = null;
   private preview = new Map<string, { box: Box; svg?: string; html?: string; css?: string; label: string; scene: string }>();
   private listeners = new Set<() => void>();
   private snapshot: RenderState;
@@ -160,8 +167,10 @@ export class Stage {
 
   recompile() {
     this.compiledMain = compile(this.log.ofTrack(MAIN_TRACK));
+    this.indexMain = new TapeIndex(this.compiledMain);
     const aside = this.log.asides()[this.log.asides().length - 1];
     this.compiledAside = aside ? compile(this.log.ofTrack(aside)) : null;
+    this.indexAside = this.compiledAside ? new TapeIndex(this.compiledAside) : null;
     this.emit();
   }
 
@@ -199,6 +208,11 @@ export class Stage {
 
   get compiled(): Compiled {
     return this.track === MAIN_TRACK || !this.compiledAside ? this.compiledMain : this.compiledAside;
+  }
+
+  /** 这一帧要问的那卷带子的索引，和上面那份 `Compiled` 同一卷。 */
+  private get index(): TapeIndex {
+    return this.track === MAIN_TRACK || !this.indexAside ? this.indexMain : this.indexAside;
   }
 
   append(ops: Op[], track: TrackId = this.track): OpEntry[] {
@@ -435,7 +449,7 @@ export class Stage {
   private pending = new Map<number, { resolve: (v: string) => void }>();
 
   openGateSeqs(): number[] {
-    return this.compiled.gates.filter((g) => g.said === null).map((g) => g.seq);
+    return this.index.openGateSeqs();
   }
 
   /**
@@ -444,8 +458,7 @@ export class Stage {
    * moment he was asked, not to the rest of the lesson.
    */
   private cardAt(t: number): Gate | null {
-    const reached = this.compiled.gates.filter((g) => g.t <= t);
-    return reached.find((g) => g.said === null) ?? [...reached].reverse().find((g) => g.said !== null && t < g.until) ?? null;
+    return this.index.cardAt(t);
   }
 
   /**
@@ -464,7 +477,7 @@ export class Stage {
 
   /** First gate not yet reached by the clock and not yet answered. */
   nextGate(): Gate | null {
-    return this.compiled.gates.find((g) => g.said === null) ?? null;
+    return this.index.firstOpenGate();
   }
 
   /**
@@ -478,14 +491,11 @@ export class Stage {
   private owedAt(t: number): number {
     if (!this.live || this.debtSuspended) return 0;
     if (!this.turnOpen && this.artFor.size === 0 && this.painting.size === 0) return 0;
-    let start = t;
-    let end = t;
-    for (const c of this.compiled.cues) {
-      if (c.t > t) break;
-      if (!ownsTime(c.op) || c.end <= t) continue;
-      start = c.t;
-      end = c.end;
-    }
+    // 站着的这一拍：占时钟的 cue 互不重叠，所以二分就是那一格。旧写法把整条带子读到 `t` 为止，
+    // 只为了问"此刻我站在哪一拍里"—— 而带子只增不改，这件事在排好的那一刻就该有答案。
+    const beat = this.index.beatAt(t);
+    const start = beat ? beat.t : t;
+    const end = beat ? beat.end : t;
     // Half-open: a frame laid down at the exact millisecond this beat ends belongs to the NEXT beat,
     // so it must not bill the line still being spoken. Inclusive here parked a caption mid-sentence.
     const inThisBeat = (at: number) => at >= start && at < end;
@@ -495,22 +505,23 @@ export class Stage {
     let n = 0;
     for (const p of this.compiled.props.values()) {
       if (p.discardedAt !== undefined && p.discardedAt <= t) continue;
-      const onStage = p.revisions.filter((r) => r.t <= t);
-      if (onStage.length === 0) continue;
-      const rev = onStage[onStage.length - 1];
+      const rev = revisionAt(p.revisions, t);
+      if (!rev) continue;
       if (this.swept(rev, cut)) continue;
       if (!painted(rev) && inThisBeat(rev.t) && (this.turnOpen || !this.painting.has(p.id))) n++;
     }
+    // 在飞的画只问"它落在站着这一拍里吗"：道具表按 id 查，最新一次外观是一个下标，
+    // 都不需要扫带子 —— 需要扫带子的那个问题（此刻站着哪一拍）上面已经二分掉了。
     for (const id of this.artFor) {
       const p = this.compiled.props.get(id);
-      const rev = p?.revisions[p.revisions.length - 1];
+      const rev = p ? p.revisions[p.revisions.length - 1] : undefined;
       // A frame being drawn that has not reached the tape is being made for right now.
       if (!rev || inThisBeat(rev.t)) n++;
     }
     for (const id of this.painting) {
       if (this.turnOpen || this.artFor.has(id)) continue; // already billed by the loops above
       const p = this.compiled.props.get(id);
-      const rev = p?.revisions[p.revisions.length - 1];
+      const rev = p ? p.revisions[p.revisions.length - 1] : undefined;
       // A background paint is owed to the beat it was placed in; a beat not reached yet bills
       // nothing here, or the clock would stand still for art belonging to a later line.
       if (!rev || (inThisBeat(rev.t) && !painted(rev))) n++;
@@ -550,38 +561,37 @@ export class Stage {
    * is following slides out of the frame.
    */
   private followOffset(id: string, t: number): { dx: number; dy: number } {
-    const mo = this.compiled.cues.filter((c) => c.op.kind === "motion" && (c.op as MotionOp).id === id && c.t <= t && c.end > t).pop();
+    const mo = this.index.motionFor(id, t);
     return mo ? motionOffset(mo.op as MotionOp, t - mo.t) : { dx: 0, dy: 0 };
   }
 
   /** The prop a settled `track` shot is still following, if the cue the camera last landed on is one. */
-  private followed(cue: Cue | undefined): string | null {
+  private followed(cue: Cue | null | undefined): string | null {
     return cue?.op.kind === "camera" && cue.op.mode === "track" && cue.op.follow ? cue.op.follow : null;
   }
 
+  /**
+   * 这一帧的画面：先二分问"哪一刀还挂着这块板"，再插值正在滑的那一刀。旧写法每帧 `filter` 出一份
+   * 新的镜头轨（十二万八千条带里九万六千个元素）再顺序扫一遍 —— 带子只增不改，这条窄表在排好的
+   * 那一刻就该在那儿。落点与跟读的顺序和旧写法逐条覆盖的一致：站定的取最后走完的那条，滑动的取
+   * 第一条没走完的。
+   */
   private cameraAt(t: number): Box {
-    const cues = this.compiled.cues.filter((c) => c.op.kind === "camera" || c.op.kind === "transition");
-    let rect = this.rect;
-    let follow: string | null = null;
-    for (const c of cues) {
-      if (c.end <= t) {
-        rect = c.to;
-        follow = this.followed(c);
-        continue;
-      }
-      if (c.t > t) break;
-      const op = c.op as { duration: number; easing: string };
-      const p = Math.min(1, Math.max(0, (t - c.t) / Math.max(c.end - c.t, 1)));
-      const from = this.live && this.camFrom && this.camFromAt <= c.t ? this.camFrom : c.from;
-      if (!this.camFrom || this.camFromAt !== c.t) {
+    const { settled, moving } = this.index.cameraFrame(t);
+    if (moving) {
+      const op = moving.op as { duration: number; easing: string };
+      const p = Math.min(1, Math.max(0, (t - moving.t) / Math.max(moving.end - moving.t, 1)));
+      const from = this.live && this.camFrom && this.camFromAt <= moving.t ? this.camFrom : moving.from;
+      if (!this.camFrom || this.camFromAt !== moving.t) {
         this.camFrom = from;
-        this.camFromAt = c.t;
+        this.camFromAt = moving.t;
       }
-      follow = this.followed(c) ?? follow;
-      const glide = lerpBox(from, c.to, (EASES[op.easing] ?? EASES.ease)(p));
+      const follow = this.followed(moving) ?? this.followed(settled);
+      const glide = lerpBox(from, moving.to, (EASES[op.easing] ?? EASES.ease)(p));
       return this.ride(glide, follow, t);
     }
-    return this.ride(rect, follow, t);
+    const rect = settled ? settled.to : this.rect;
+    return this.ride(rect, this.followed(settled), t);
   }
 
   private ride(rect: Box, follow: string | null, t: number): Box {
@@ -596,14 +606,7 @@ export class Stage {
    * transparent wipe) and `board` is where it landed.
    */
   private cutAt(t: number): Cut | null {
-    let cut: Cut | null = null;
-    for (const c of this.compiled.cues) {
-      if (c.op.kind !== "transition") continue;
-      const flip = c.t + (c.end - c.t) / 2;
-      if (flip > t) break;
-      cut = { flip, board: c.op.to };
-    }
-    return cut;
+    return this.index.cutAt(t);
   }
 
   /**
@@ -623,8 +626,7 @@ export class Stage {
   visibleName(id: string, t: number): boolean {
     const cut = this.cutAt(t);
     const standing = (p: Prop): Revision | undefined => {
-      const onStage = p.revisions.filter((r) => r.t <= t);
-      const rev = onStage[onStage.length - 1];
+      const rev = revisionAt(p.revisions, t);
       return rev && !this.swept(rev, cut) ? rev : undefined;
     };
     const named = this.compiled.props.get(id);
@@ -637,20 +639,22 @@ export class Stage {
     return this.cutAt(t)?.board ?? null;
   }
 
+  /**
+   * 台上这一刻有什么。强调叠层和运动都问索引（"此刻在跑的几格"），道具的外观倒着找第一条已经到的 ——
+   * 旧写法每格道具把整条带子筛两遍、再把自己的外观表复制两遍。带子再长，站着的格子只有几格。
+   */
   private visibleProps(t: number): VisibleProp[] {
     const out: VisibleProp[] = [];
     const cut = this.cutAt(t);
-    const highlights = this.compiled.cues.filter((c) => c.op.kind === "highlight" && c.t <= t && c.end > t);
-    const motions = this.compiled.cues.filter((c) => c.op.kind === "motion" && c.t <= t && c.end > t);
+    const highlights = this.index.highlightsAt(t);
     for (const p of this.compiled.props.values()) {
-      const revs = p.revisions.filter((r) => r.t <= t);
-      if (revs.length === 0) continue;
+      const rev = revisionAt(p.revisions, t);
+      if (!rev) continue;
       if (p.discardedAt !== undefined && p.discardedAt <= t) continue;
-      const rev: Revision = revs[revs.length - 1];
       if (this.swept(rev, cut)) continue;
-      const hl = highlights.find((h) => (h.op as { target: string }).target === p.id);
+      const style = highlights.get(p.id);
       const pv = this.preview.get(p.id);
-      const mo = motions.filter((m) => (m.op as MotionOp).id === p.id).pop();
+      const mo = this.index.motionFor(p.id, t);
       const box = displaced(pv?.box ?? rev.box, mo ? motionOffset(mo.op as MotionOp, t - mo.t) : { dx: 0, dy: 0 });
       // Delivery is read off the tape, never off the tape head: a drawing still streaming in is a
       // promise, so the caption for it waits. The outline below is the other question — is anything
@@ -668,7 +672,7 @@ export class Stage {
         note: rev.note,
         draft: !painted(rev),
         awaiting: this.artFor.has(p.id) && !painted(streaming) && overlaps(box, this.rect),
-        highlight: hl ? (hl.op as { style: string }).style : undefined,
+        highlight: style,
       });
     }
     for (const [id, pv] of this.preview) {
@@ -694,8 +698,10 @@ export class Stage {
     const props = this.visibleProps(t);
     this.owed = this.owedAt(t) || (this.playing ? this.blockedBy : 0);
     this.artWait = this.playing && this.owed > 0;
-    const narr = this.compiled.cues.filter((c) => c.op.kind === "narrate" && c.t <= t && c.end > t).pop();
-    const veil = this.compiled.cues.filter((c) => c.op.kind === "transition" && c.t <= t && c.end > t).pop();
+    // 旁白和幕布各问一次索引：旧写法每一帧把整条带子筛两遍再 pop。两者都不重叠（占时钟的），
+    // 所以"最后落下的那一条还在跑"就是"站着的那一条"。
+    const narr = this.index.narrationAt(t);
+    const veil = this.index.veilAt(t);
     return {
       t,
       duration: this.compiled.duration,
