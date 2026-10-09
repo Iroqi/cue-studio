@@ -7,18 +7,24 @@ export class OpLog {
   private entries: OpEntry[] = [];
   private seq = 0;
   private turn = 0;
+  private group = 0;
 
   /**
    * The single gate every op passes through, whether it came from a director tool call or from a
    * recording somebody else shared. The interpreter's arithmetic — the clock, the camera, the ink
    * measure — assumes finite numbers and short strings; that assumption is enforced here rather than
    * left to whichever caller happens to have validated its input.
+   *
+   * 一次调用 = 一批。解释器里唯一要往后看的落点（`here`）只许读到本批为止，见 `compile.ts` 的
+   * `placementView`：观众已经看过的那一格，不许被后落的那一批改写。
    */
   append(ops: Op[], track: TrackId): OpEntry[] {
+    const batch = this.group++;
     const added = ops.map((op) => ({
       seq: this.seq++,
       track,
       turn: this.turn,
+      group: batch,
       op: guardOp(op),
     }));
     this.entries.push(...added);
@@ -85,6 +91,7 @@ export class OpLog {
     this.entries = [];
     this.seq = 0;
     this.turn = 0;
+    this.group = 0;
   }
 
   /**
@@ -92,6 +99,11 @@ export class OpLog {
    * makes it the one path where the input is entirely somebody else's bytes — a `#s=` fragment from
    * a stranger — so the same gate applies here. Nothing is rejected: an unreadable field is defaulted
    * and the rest of the show plays.
+   *
+   * 分批号一起进来：一支分享链接带着它当时是怎么一批一批落下的，重放于是和直播看见同一张台面（`here`
+   * 的落点只读到本批为止，见 `compile.ts`）。老链接没有这个字段，整卷就是一批 —— 那正是它当年被排出来
+   * 的样子。按最大号续上，因为按"接着讲"接上去的现场，新落的那一批不许和档案里某一批同号：同号就是
+   * 同一批，那一格的落点就会又读到观众已经看过的那一段身后去。
    */
   restore(entries: OpEntry[]) {
     this.entries = entries
@@ -100,6 +112,7 @@ export class OpLog {
       .sort((a, b) => a.seq - b.seq);
     this.seq = this.entries.reduce((m, e) => Math.max(m, e.seq + 1), 0);
     this.turn = this.entries.reduce((m, e) => Math.max(m, e.turn), 0);
+    this.group = this.entries.reduce((m, e) => Math.max(m, (e.group ?? -1) + 1), 0);
   }
 
   export(): OpEntry[] {

@@ -506,16 +506,34 @@ export function compile(entries: OpEntry[]): Compiled {
    * compiler — a frozen tab, not a slow show. A beat's camera tail is a move or two, so cutting the
    * look-ahead after `LOOKAHEAD_OPS` entries is exact for anything a director actually performs and
    * constant-cost for a tape that does not.
+   *
+   * 第二条边界是**这一批**（`OpEntry.group`），比"下一句旁白"更近的那一道墙。这一头以前只认时钟，所以
+   * 一格的落点会越过批的边界，读到身后任何一批里的 overlay；而 `compile` 是整卷重排的，于是导演后落的
+   * 那一批把观众已经看过的那一格改写了。实测（`landed.test.ts` 钉的同一卷）：第一批 `{line, here}` 落下
+   * 的锚点是 `{x:700,…}`，追加第二批 `{pan right, line}` 之后同一个道具的锚点成了 `{x:2300,…}` —— 东西
+   * 在观众眼前自己飞走，而带子上没有任何一刀说要挪它。这不是难看，是"磁带只增不改"那句契约破了：落笔
+   * 那一刻算好的几何，不该被后来的笔改。旁白挡不住它，因为 overlay 不占时钟 —— 第二批完全可以是一刀
+   * 镜头加一句话，而那句话之前的那一刀正在被第一批里的占位符读着。
+   *
+   * 所以这一问只在同一批里往后看：一批是"一次工具调用排完的那一段"（`stage_script` 一整份骨架就是一
+   * 批，占位符、那一刀的 pan、那句话都在里面）。批内的语义和以前逐字相同 —— `compile.test.ts` 钉的
+   * "占位符先上、镜头后走"仍然跟着镜头走，那一卷整卷是一批。批与批之间是**已经演过**的历史，历史不许
+   * 重演。缺 `group` 的带子（旧分享链接、测试里一次排完的 tape）两边都是 `undefined`，于是不换批 ——
+   * 那正是它们当时被排出来的样子。
    */
   const LOOKAHEAD_OPS = 256;
 
   const placementView = (at: number): Box => {
     let view = cursor;
+    const group = entries[at].group;
     const stop = Math.min(entries.length, at + LOOKAHEAD_OPS + 1);
     for (let n = at + 1; n < stop; n++) {
-      const next = entries[n].op;
-      if (ownsTime(next)) break;
-      if (next.kind === "camera" && (next.mode === "pan" || next.mode === "zoom")) view = resolve(next, view);
+      const next = entries[n];
+      // 换了批就是已经演过的历史：往后读到它，等于让后一笔改写前一笔已经落定的几何。
+      if (next.group !== group) break;
+      const op = next.op;
+      if (ownsTime(op)) break;
+      if (op.kind === "camera" && (op.mode === "pan" || op.mode === "zoom")) view = resolve(op, view);
     }
     return view;
   };

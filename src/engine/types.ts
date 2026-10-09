@@ -236,6 +236,15 @@ export interface OpEntry {
   seq: number;
   track: TrackId;
   turn: number;
+  /**
+   * 这一刀属于哪一批落下的一起排定的刀。`OpLog.append()` 每被调一次发一个新号，`turn` 是"导演的一
+   * 轮"（一轮里可以有好几次工具调用），这个是"一次工具调用里排完的那一批"—— 解释器里唯一需要往后
+   * 看的落点（`here`）只许在这一批里面看，见 `compile.ts` 的 `placementView`。
+   *
+   * 可以缺：旧版本的分享链接、以及测试里一次 `compile(tape(...))` 排完的带都没有它，缺了就当整卷是
+   * 一批 —— 那正是它们当时的行为（一整批一起排，本来就还没有"观众已经看过"这一段）。
+   */
+  group?: number;
   op: Op;
 }
 
