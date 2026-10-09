@@ -1,4 +1,4 @@
-import { compile } from "./compile";
+import { compile, perform, type Interpreter } from "./compile";
 import { MAIN_TRACK, OpLog } from "./log";
 import { TapeIndex } from "./frame";
 import { StandingIndex } from "./standing";
@@ -80,6 +80,15 @@ function painted(r: { svg?: string; html?: string; scene3d?: Scene3DSpec }): boo
 
 export class Stage {
   readonly log = new OpLog();
+  /*
+   * 一条轨道一台解释器。带子只增不改，所以"走到这一刻手上有的东西"本来就该活着，而不该每批被重新
+   * 发明一遍 —— 这三条字段就是那台机器，`compiled*` 是它当下演出来的台面。
+   *
+   * 机器的生死完全由带子的引用决定（`perform`），所以这里不需要给"哪一头换了带子"维护清单：
+   * `append` 让那一轨的数组长一截（引用不变 → 续演），`cutFrom`/`restore`/`clear` 换数组（→ 从零演）。
+   */
+  private machineMain: Interpreter | null = null;
+  private machineAside: Interpreter | null = null;
   private compiledMain: Compiled = compile([]);
   private compiledAside: Compiled | null = null;
   /*
@@ -172,13 +181,33 @@ export class Stage {
   }
 
   recompile() {
-    this.compiledMain = compile(this.log.ofTrack(MAIN_TRACK));
+    /*
+     * 一条轨道一台机器，机器跟着那一轨的带子活。`perform` 只问一句"还是不是那一卷"（数组引用），
+     * 所以这里不需要另外记游标，也不需要给"哪一头换了带子"写清单 —— `log` 那三扇门（`append` 长一截、
+     * `cutFrom`/`restore` 换一卷）已经把答案写进引用里了。
+     *
+     * 插播那一头连"换轨道"都不用管：新的 `aside:N` 是另一卷带子，引用不同，`perform` 当场就把上一支
+     * 插播的机器扔掉、开一台新的，而旧机器只剩这一条字段握着它 —— 换掉就是回收。
+     */
+    const main = perform(this.machineMain, this.log.ofTrack(MAIN_TRACK));
+    this.machineMain = main.it;
+    this.compiledMain = main.compiled;
     this.indexMain = new TapeIndex(this.compiledMain);
     this.standingMain = new StandingIndex(this.compiledMain);
-    const aside = this.log.asides()[this.log.asides().length - 1];
-    this.compiledAside = aside ? compile(this.log.ofTrack(aside)) : null;
-    this.indexAside = this.compiledAside ? new TapeIndex(this.compiledAside) : null;
-    this.standingAside = this.compiledAside ? new StandingIndex(this.compiledAside) : null;
+    const asides = this.log.asides();
+    const aside = asides[asides.length - 1];
+    if (aside) {
+      const withAside = perform(this.machineAside, this.log.ofTrack(aside));
+      this.machineAside = withAside.it;
+      this.compiledAside = withAside.compiled;
+      this.indexAside = new TapeIndex(this.compiledAside);
+      this.standingAside = new StandingIndex(this.compiledAside);
+    } else {
+      this.machineAside = null;
+      this.compiledAside = null;
+      this.indexAside = null;
+      this.standingAside = null;
+    }
     this.emit();
   }
 

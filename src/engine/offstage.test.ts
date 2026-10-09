@@ -42,7 +42,7 @@ interface LegacyProp {
  * 清空，所以"撤下 → 重画"之后那个数是"没有"而不是"某个时刻"。外观表两边本来就一样（`t` 没动），
  * 差的只有这一格；时钟只由占时钟的 op 推进，和解释器同一条规则。
  */
-function legacyOf(entries: OpEntry[], c: Compiled): Map<string, LegacyProp> {
+function legacyOf(entries: readonly OpEntry[], c: Compiled): Map<string, LegacyProp> {
   const shape = new Map<string, LegacyProp>();
   let clock = 0;
   for (const e of entries) {
