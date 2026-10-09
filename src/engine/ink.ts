@@ -270,12 +270,87 @@ function scan(el: Element, m: Affine, out: Extent) {
 }
 
 /** The author's canvas plus the ink inside it, both in viewBox units. */
-type Measure = { vb: Box; ink: Box } | null;
-const measured = new Map<string, Measure>();
+export type Measure = { vb: Box; ink: Box } | null;
 
-function measure(markup: string): Measure {
-  if (measured.has(markup)) return measured.get(markup) ?? null;
-  if (measured.size > 160) measured.clear();
+/*
+ * 一份"量过的墨"的账。
+ *
+ * 以前它到 160 条就**整份抹掉**。带子只增不改，而 `compile` 每落一笔把整卷重排一遍，于是量过的墨每
+ * 一批都要重量 —— 只要这堂课画得比 160 格多，那一抹就把全部已知的墨一起带走，下一遍从头再解析一次。
+ *
+ * 数的是**解析次数**（把 `DOMParser.parseFromString` 包一层计数器），毫秒只作对照。同一支探针在改前的
+ * 代码上量同一批带子（每格一段互不相同的真标记；只交 `html` 的带子不过这个门，同规模一直是 1ms 量级）：
+ * 81 格那卷 首遍 81 / 再排一遍 0 —— 还没到那道 160，旧写法看起来没问题。151 格：首遍 231，也就是**一
+ * 遍之内就自己抹了自己一次**。201 格：首遍 402、再排仍然 402、1494ms。401 格：802 / 802 / 5133ms。
+ * 于是带子一旦长过那道 160，每一遍都要把全部已知重解析一遍 —— 导演落一笔付一秒半，而这笔钱随课上画的
+ * 格数长，它恰好是"一堂好课"的形状。改后同一批带子：首遍正好 props 次，其后每遍 0，墙钟 0.9 → 4.0ms
+ * 线性。`ink.test.ts` 末尾那一节把这几个数和退出的次序一起钉住。
+ *
+ * 换成有界的 LRU：命中就把它挪到最新那一头，越界从最久没人问的那一头**一条条**退。边界有两道 —— 条数
+ * 和 keyed 标记的总字数。后者才是真的那道，因为这一份账多花的只是引用（字面量本来就在带子上）加一个
+ * 几百字节的量出来的框；它真正防的是剪带之后：`cutFrom` 把带子剪断重排，那些画已经从带子上掉了，缓存
+ * 还在替它们握着字符串。一条比整份预算还长的画不进这一份账（存进去就是当场全部退出，不如不存）。
+ *
+ * 两个边界和这道类一起导出：退出的价钱要在**小预算**上钉（真要灌 4096 条各不相同的画，光是解析就要
+ * 十几秒，那一头量的是浏览器不是这一件），而小预算上"谁被挤出去、谁留在账上"才是这一件要说的那句话。
+ */
+export const MAX_ENTRIES = 4096;
+export const MAX_CHARS = 8_000_000;
+
+export class InkCache {
+  private readonly map = new Map<string, Measure>();
+  private chars = 0;
+  private readonly maxEntries: number;
+  private readonly maxChars: number;
+
+  constructor(maxEntries: number, maxChars: number) {
+    this.maxEntries = maxEntries;
+    this.maxChars = maxChars;
+  }
+
+  /** 量一遍并记账。`inkBox` 走的就是这一条，只是它用的是那道默认的预算。 */
+  measure(markup: string): Measure {
+    const hit = this.get(markup);
+    if (hit !== undefined) return hit;
+    const out = readInk(markup);
+    this.set(markup, out);
+    return out;
+  }
+
+  /** 命中过的就变成最新的一条；`null`（量不出墨）也算命中 —— 读不懂的画每批重解析一遍是最冤枉的那笔钱。 */
+  get(markup: string): Measure | undefined {
+    const hit = this.map.get(markup);
+    if (hit === undefined) return undefined;
+    this.map.delete(markup);
+    this.map.set(markup, hit);
+    return hit;
+  }
+
+  set(markup: string, out: Measure): void {
+    if (markup.length > this.maxChars) return;
+    if (!this.map.has(markup)) this.chars += markup.length;
+    this.map.set(markup, out);
+    while (this.map.size > this.maxEntries || this.chars > this.maxChars) {
+      const oldest = this.map.keys().next();
+      if (oldest.done) break;
+      this.chars -= oldest.value.length;
+      this.map.delete(oldest.value);
+    }
+  }
+
+  /** 账上现在握着多少条、多少字。给对账那一头问"越界之后还剩几格"。 */
+  get size(): number {
+    return this.map.size;
+  }
+
+  get held(): number {
+    return this.chars;
+  }
+}
+
+const inkCache = new InkCache(MAX_ENTRIES, MAX_CHARS);
+
+function readInk(markup: string): Measure {
   let out: Measure = null;
   try {
     const doc = new DOMParser().parseFromString(markup, "image/svg+xml");
@@ -284,13 +359,12 @@ function measure(markup: string): Measure {
     if (vb && svg) {
       const e = new Extent();
       scan(svg, IDENTITY, e);
-      const ink = e.ok ? e.box : null;
-      if (ink && ink.w > 0 && ink.h > 0) out = { vb, ink };
+      const found = e.ok ? e.box : null;
+      if (found && found.w > 0 && found.h > 0) out = { vb, ink: found };
     }
   } catch {
     out = null;
   }
-  measured.set(markup, out);
   return out;
 }
 
@@ -301,7 +375,7 @@ function measure(markup: string): Measure {
  */
 export function inkBox(markup: string | undefined, world: Box): Box | undefined {
   if (!markup || !(world.w > 0) || !(world.h > 0)) return undefined;
-  const found = measure(markup);
+  const found = inkCache.measure(markup);
   if (!found) return undefined;
   const { vb, ink } = found;
   const want = world.w / world.h;
