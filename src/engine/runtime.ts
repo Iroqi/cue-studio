@@ -1,6 +1,6 @@
 import { compile, perform, type Interpreter } from "./compile";
 import { MAIN_TRACK, OpLog } from "./log";
-import { TapeIndex } from "./frame";
+import { TapeIndex, reindex } from "./frame";
 import { StandingIndex } from "./standing";
 import { displaced, motionOffset } from "./motion";
 import { SETTLE_MS } from "./speech";
@@ -92,13 +92,13 @@ export class Stage {
   private compiledMain: Compiled = compile([]);
   private compiledAside: Compiled | null = null;
   /*
-   * 带子的位置索引跟着带子走：一次重排建一份，一帧只问二分。它不重新解释任何东西 —— 拿的就是
-   * 上面那两份 `Compiled`，所以"索引算错了"和"解释器算错了"不会混成一处。
+   * 带子的位置索引跟着带子走：换卷那一刻建一本，落一笔只吸收新落的那一截，一帧只问二分。它不重新
+   * 解释任何东西 —— 拿的就是上面那两份 `Compiled`，所以"索引算错了"和"解释器算错了"不会混成一处。
    *
    * `StandingIndex` 是同一件事的另一半：cue 表那边走的是"这一刻哪一格还在跑"，道具那边走的是"这一刻
    * 什么站在台上"。它读的也是上面那两份 `Compiled` 里的外观，所以它对账的对象和 `TapeIndex` 是同一个。
    */
-  private indexMain = new TapeIndex(this.compiledMain);
+  private indexMain = reindex(null, this.compiledMain);
   private indexAside: TapeIndex | null = null;
   private standingMain = new StandingIndex(this.compiledMain);
   private standingAside: StandingIndex | null = null;
@@ -192,7 +192,7 @@ export class Stage {
     const main = perform(this.machineMain, this.log.ofTrack(MAIN_TRACK));
     this.machineMain = main.it;
     this.compiledMain = main.compiled;
-    this.indexMain = new TapeIndex(this.compiledMain);
+    this.indexMain = reindex(this.indexMain, this.compiledMain);
     this.standingMain = new StandingIndex(this.compiledMain);
     const asides = this.log.asides();
     const aside = asides[asides.length - 1];
@@ -200,7 +200,7 @@ export class Stage {
       const withAside = perform(this.machineAside, this.log.ofTrack(aside));
       this.machineAside = withAside.it;
       this.compiledAside = withAside.compiled;
-      this.indexAside = new TapeIndex(this.compiledAside);
+      this.indexAside = reindex(this.indexAside, this.compiledAside);
       this.standingAside = new StandingIndex(this.compiledAside);
     } else {
       this.machineAside = null;
