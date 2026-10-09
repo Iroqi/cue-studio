@@ -325,6 +325,12 @@ export function compile(entries: OpEntry[]): Compiled {
   const props = new Map<string, Prop>();
   const cues: Cue[] = [];
   const gates: Gate[] = [];
+  /**
+   * 每一刀镜头落在哪一刻，按 op 引用记。带子只增不改，所以"这一刀问的是哪一刻"在排好的那一刻就该
+   * 有答案 —— 那一问以前写成 `cues.find((c) => c.op === op)`，而它的用法恰恰是**找不到才说话**，
+   * 于是每一刀点一次名把整张 cue 表走完一遍。见 `Compiled.shotAt`。
+   */
+  const shotAt = new Map<CameraOp, number>();
   // A card is looked up by `seq` twice: once when the learner's answer arrives, once when the beats are
   // closed off to find the window it was asked in. Both are keyed here rather than scanned, because a
   // scan makes a tape with many cards cost one pass over all of them *per card* — which is the same
@@ -571,6 +577,12 @@ export function compile(entries: OpEntry[]): Compiled {
     switch (op.kind) {
       case "build":
       case "patch": {
+        // `patch` 是给已经站在台上的东西交图，不是把它造出来。一个带上还没有的名字（拼错了一个 id，
+        // 或者只被 `link` 念到过）落到这里，以前会凭空长出一格 `{0,0,1600,900}` 的"成品"：满幅、
+        // `partial:false`，于是时钟不等它（`owedAt` 只数空白框欠的画），观众看见一整块盖住板的东西，
+        // 而带子上没有任何一刀说要它。`link` 那一头的仓库早就防住了（`fetch_prop` 会说"只被念到名字"），
+        // 这一头没有防 —— 现在两头的说法是同一句。
+        if (op.kind === "patch" && !props.get(op.id)?.revisions.length) break;
         const p = ensureProp(op.id, op.scene ?? (props.get(op.id)?.scene ?? (standing || "default")));
         // Naming a board moves an established prop onto it, exactly as `recall` does: the name is the
         // director saying where this object belongs now, and a prop left on the old board is invisible.
@@ -621,7 +633,11 @@ export function compile(entries: OpEntry[]): Compiled {
         break;
       }
       case "link": {
+        // 关系留在道具表里，名字先于画面存在 —— 那是身份，不是画框（`identity.test.ts` 钉的就是这一条）。
+        // `at` 是这一刀落下的那一刻：以前这一格只存 `to` 和 `relation`，于是它是这张表上唯一**没有时刻**
+        // 的账，倒带回到那一刀之前，导演的快照照样报出那条关系，而它指着的那个名字此刻还没上台。
         ensureProp(op.from, props.get(op.from)?.scene ?? "default").links.push({
+          at: start,
           to: op.to,
           relation: op.relation,
         });
@@ -630,6 +646,8 @@ export function compile(entries: OpEntry[]): Compiled {
       case "camera": {
         const to = resolve(op);
         cues.push({ t: start, end: start + cueMs(op), op, from: cursor, to });
+        // 同一刀落在带子上只有一个位置；一次重演可以反复问同一个引用，这一格不许多付钱。
+        if (!shotAt.has(op)) shotAt.set(op, start);
         cursor = to;
         break;
       }
@@ -697,5 +715,5 @@ export function compile(entries: OpEntry[]): Compiled {
   // glide or a motion cue emitted after the last line would otherwise be truncated at the tape end.
   const tails = cues.reduce((m, c) => Math.max(m, c.end), 0);
 
-  return { props, scenes, cues, gates, beats, duration: Math.max(t, tails), lastSeq };
+  return { props, scenes, cues, gates, beats, duration: Math.max(t, tails), lastSeq, shotAt };
 }

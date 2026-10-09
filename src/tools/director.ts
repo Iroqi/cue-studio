@@ -96,6 +96,33 @@ export function directorTools(
   const N = (v: unknown, d = 0) => (typeof v === "number" && Number.isFinite(v) ? v : d);
   const A = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? (v as Record<string, unknown>[]) : []);
   const B = (o: Record<string, unknown>): Box => ({ x: N(o.x), y: N(o.y), w: Math.max(N(o.w, 200), 1), h: Math.max(N(o.h, 200), 1) });
+  /*
+   * 回执不许替带子说话。`move`/`draw`/`discard`/`recall`/`highlight`/`motion` 以前无论指一个什么名字
+   * 都回"成功"，而解释器对着一带上没有的名字什么都落不下去（`patch` 那一头现在也不凭空造一格了）：
+   * 模型把这份静默读成"动过了"，接着往下排，整场就建在一个没发生的动作上。只有 `camera` 有
+   * `blindCamera` 那一句对账 —— 现在每一刀都有。
+   *
+   * 问的是**带子尽头**那一刻（`stage.compiled.duration`）而不是播放头：这一刀是追加在带子尾巴上的，
+   * 导演能落笔的台就是 tape 的头，那也正是解释器接住它的地方。
+   */
+  const hasFrame = (id: string): { ok: true } | { ok: false; why: string } => {
+    const p = stage.compiled.props.get(id);
+    if (!p || p.revisions.length === 0)
+      return {
+        ok: false,
+        why: p
+          ? `${id} 只被 link 念到过名字，一帧都没上过台 —— 先 build（或 paint）它，这一刀才有东西可指。`
+          : `${id} 在带上不存在（拼错了，或者还没落下）。这一刀不落，台上不会有任何变化。`,
+      };
+    return { ok: true };
+  };
+  /** 撤下的东西仍然算"有这个名字"：`discard` 要的是此刻站着的，`recall` 要的正是站着之外的。 */
+  const onStage = (id: string): { ok: true } | { ok: false; why: string } => {
+    const miss = hasFrame(id);
+    if (!miss.ok || stage.visibleName(id, stage.compiled.duration)) return miss;
+    return { ok: false, why: `${id} 此刻不在台上（已经 discard，或被换场扫走了）。这一刀不落：画面里不会有变化。` };
+  };
+  const nope = (why: string): DirectorResult => ({ ops: [], result: why, isError: true });
   /** Asking for an object without naming coordinates means "where the audience is looking". */
   const HERE = (o: Record<string, unknown>) => (o.x === undefined && o.y === undefined ? true : undefined);
   /** Models write `target` as either one id or a list; both mean the same framing. */
@@ -172,7 +199,9 @@ export function directorTools(
           scene3d: scene3(args.scene3d),
         });
         return { ops, result: `built ${S(args.id)}` };
-      case "draw":
+      case "draw": {
+        const miss = hasFrame(S(args.id));
+        if (!miss.ok) return nope(miss.why);
         ops.push({
           kind: "patch",
           id: S(args.id),
@@ -183,15 +212,31 @@ export function directorTools(
           label: args.label ? S(args.label) : undefined,
         });
         return { ops, result: `drew ${S(args.id)}` };
-      case "move":
+      }
+      case "move": {
+        const miss = hasFrame(S(args.id));
+        if (!miss.ok) return nope(miss.why);
         ops.push({ kind: "patch", id: S(args.id), box: B(args) });
         return { ops, result: `moved ${S(args.id)} to (${N(args.x)},${N(args.y)})` };
-      case "discard":
+      }
+      case "discard": {
+        const miss = onStage(S(args.id));
+        if (!miss.ok) return nope(miss.why);
         ops.push({ kind: "discard", id: S(args.id) });
         return { ops, result: `discarded ${S(args.id)}` };
-      case "link":
+      }
+      case "link": {
         ops.push({ kind: "link", from: S(args.from), to: S(args.to), relation: S(args.relation) });
-        return { ops, result: `linked ${S(args.from)} ${S(args.relation)} ${S(args.to)}` };
+        // 名字先于画面存在是设计（`link` 到一件还没建的东西，就是在替它登记身份），所以这一刀照落；
+        // 但回执不许说得像两头都已经在台上 —— 哪一头还没落过笔，就点名哪一头。
+        const ghost = [S(args.from), S(args.to)].filter((id) => !stage.compiled.props.get(id)?.revisions.length);
+        return {
+          ops,
+          result: ghost.length
+            ? `linked ${S(args.from)} ${S(args.relation)} ${S(args.to)} —— ${ghost.join("、")} 还没在带上落过一帧：这条关系是替他记下的身份，台上现在看不见`
+            : `linked ${S(args.from)} ${S(args.relation)} ${S(args.to)}`,
+        };
+      }
       case "fetch_prop": {
         const p = stage.compiled.props.get(S(args.id));
         if (!p) return { ops, result: `no prop named ${S(args.id)}`, isError: true };
@@ -218,9 +263,14 @@ export function directorTools(
           }),
         };
       }
-      case "recall":
+      case "recall": {
+        // `recall` 存在的全部理由就是把一件**已经不在眼前**的东西带回来，所以它要的不是"此刻站着"，
+        // 而是"带上确实落过一帧"。名字都没落过笔，就没什么可带 —— 那正是以前回 `reused ...` 的那一刀。
+        const miss = hasFrame(S(args.id));
+        if (!miss.ok) return nope(miss.why);
         ops.push({ kind: "recall", id: S(args.id), scene: S(args.scene), box: B(args), here: HERE(args) });
         return { ops, result: `reused ${S(args.id)} in ${S(args.scene)} — same object identity, previous screen position remembered` };
+      }
       case "camera":
         ops.push(CAM(args));
         return { ops, result: `camera ${S(args.mode)} over ${N(args.duration, 900)}ms` };
@@ -237,10 +287,15 @@ export function directorTools(
       case "transition":
         ops.push({ kind: "transition", style: S(args.style, "dissolve") as never, to: S(args.to), duration: N(args.seconds, 1.2) * 1000 });
         return { ops, result: `transition ${S(args.style)} -> ${S(args.to)}` };
-      case "highlight":
+      case "highlight": {
+        const miss = onStage(S(args.target));
+        if (!miss.ok) return nope(miss.why);
         ops.push({ kind: "highlight", target: S(args.target), style: S(args.style, "pulse") as never, duration: N(args.seconds, 1.5) * 1000 });
         return { ops, result: `highlighted ${S(args.target)}` };
+      }
       case "motion": {
+        const miss = onStage(S(args.id));
+        if (!miss.ok) return nope(miss.why);
         const mode = MOTION_MODES.has(S(args.mode)) ? S(args.mode) : "oscillate";
         ops.push({
           kind: "motion",

@@ -370,6 +370,9 @@ describe("镜头那一刻的答案和朴素读法逐条对账", () => {
       switch (op.kind) {
         case "build":
         case "patch": {
+          // 参照必须是**当下那条规则**的逐字重放，不是改前那一条：`patch` 指一个带上还没落过笔的名字,
+          // 解释器现在什么也不落（`moment-receipts.test.ts` 钉的就是这一条），这里也不许多出一格。
+          if (op.kind === "patch" && !revs.get(op.id)?.length) break;
           // 没点板的道具落在"它上一次被点到的那块板"上，没有历史才落在脚下那块 —— 参照抄的是
           // `ensureProp` 那一问，不是自己发明的第二条规则。
           const scene = op.scene ?? propScene.get(op.id) ?? (ref.scene || "default");
