@@ -35,8 +35,9 @@ export async function decodeTape(payload: string): Promise<OpEntry[]> {
     // A truncated or mistyped fragment surfaces here as a network error, not as a parse error.
     throw new Error("不是一段舞台录像");
   }
-  if (!Array.isArray(entries) || entries.some((e) => typeof e.seq !== "number" || !e.op)) {
-    throw new Error("不是一段舞台录像");
-  }
+  // 逐格的验收是门口的事（`guard.ts` 的 `guardEntry`，经 `OpLog.restore`）。这一头只认"是不是一卷带子"：
+  // 以前它也管逐格，而且管法是 `typeof e.seq === "number"` 不合格就把**整卷**拒掉 —— 一个坏号毁掉一节课，
+  // 而点链接的人没有犯错。现在坏号那一格进门时被丢掉，其余照常演。
+  if (!Array.isArray(entries)) throw new Error("不是一段舞台录像");
   return entries as OpEntry[];
 }

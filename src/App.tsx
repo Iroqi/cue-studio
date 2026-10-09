@@ -180,7 +180,9 @@ export default function App() {
     decodeTape(location.hash.slice(3)).then(
       (entries) => {
         stage.load(entries);
-        setStatus(`载入别人排过的一场：${entries.length} 条指令，重放它一个模型都没叫。`);
+        // 报的是**进得来**的那几格，不是地址里带着的那几格：门会把说不清自己在哪儿的一格丢掉，
+        // 而这一句是给点链接的人看的，他得知道自己眼前演的是多少刀。
+        setStatus(`载入别人排过的一场：${stage.log.length} 条指令，重放它一个模型都没叫。`);
         stage.play();
       },
       (e) => setStatus(`地址里的录像读不出来：${(e as Error).message}`),

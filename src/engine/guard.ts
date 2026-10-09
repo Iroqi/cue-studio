@@ -1,4 +1,4 @@
-import type { Box, Op, Prim3, Scene3DSpec, Vec3 } from "./types";
+import type { Box, Op, OpEntry, Prim3, Scene3DSpec, TrackId, Vec3 } from "./types";
 
 /*
  * The tape is the product: it is exported, compressed into a share URL, and re-performed. Every op
@@ -17,6 +17,18 @@ import type { Box, Op, Prim3, Scene3DSpec, Vec3 } from "./types";
  * line is 10.7 hours of narration once `speechMs` gets it, a 1e12 box is a frame of 1.2e12, and DOMPurify
  * parses a 2.8 MB `<svg>` before dropping one node. The ceilings below come from what a lesson is made of
  * — a board is 1600x900 and a line is something a teacher says — not from the worst case they defend.
+ *
+ * 然后是**账本**。上面这一整套管的是一个 op 自己说了什么，而没有管它坐在哪儿：`seq`/`turn`/`track`/`group`
+ * 这四个字段在 `restore()` 里几乎原样进来（当时只查了 `typeof seq === "number"`），而它们不是几何 —— 它们
+ * 是编号，编号是拿去**发下一个号**的。JSON 里 `1e999` 解析成 `Infinity`，而 `typeof Infinity === "number"`
+ * 恰好通过那道检查，于是 `Math.max(m, Infinity + 1)` 把批号计数器钉死在 Infinity：接着讲的那一批和档案里某
+ * 一批同号，而 `compile` 是整卷重排的 —— 观众已经看过的那一格当场飞走（`landed.test.ts` 那一纸"只增不改"
+ * 的契约被陌生人的链接重新破掉）。`NaN` 走的是另一半：`Math.max(0, NaN)` 是 NaN，于是新落的每一格同号。
+ *
+ * 所以门也管账本（`guardEntry`：`seq`/`turn`/`track`/`group`），而这里必须比 op 那一头更**笨**一点：一个号
+ * 被"修正"成另一个号就是改写记录 —— 别人的回答会被安到隔壁那张卡头上，一个槽位会插进别人那一轮里。认不
+ * 出来的号不当作"松一点的数字"，只回到两种诚实的下场：这一格连自己在哪儿都说不出来（`seq`、撞号）就当没有
+ * 这一格；只是少了一个批次的记号（`turn`、`group`）就退回这个字段的默认（`0`、"没有这个字段"）。
  */
 
 const PRIMITIVE_SHAPES = new Set<Prim3["shape"]>([
@@ -373,4 +385,57 @@ export function guardOp(op: Op): Op {
       // director hears about it from the tool layer rather than watching a blank board.
       return op;
   }
+}
+
+/**
+ * A track is a *place a show is performed on*, not a label: `runtime.ts` compiles the main tape and the
+ * last aside, and `asides()` is whatever else is on the tape. So a junk track number parks ops on a
+ * track nobody ever performs — silently, since nothing throws here either. The recovery is one
+ * character: an unreadable name gets a mark ("this landed somewhere") rather than being moved onto a
+ * real stage, because re-tracking would relocate somebody else's whole performance between shows.
+ */
+const trackOf = (v: unknown): TrackId => (typeof v === "string" && v.length > 0 ? v.slice(0, MAX_NAME) : "*");
+
+/**
+ * Ledger numbers are read with `Number.isSafeInteger` and not with `typeof`: these are the numbers the
+ * log *counts on* — `seq + 1`, `(group ?? -1) + 1`, `Math.max` — and past 2^53 that arithmetic lies
+ * (`1e300 + 1 === 1e300`, so the next batch would be handed the archive's own batch number). `Infinity`
+ * (what JSON makes of `1e999`) and `NaN` fail the same predicate, which is the point: one rule covers
+ * all three shapes of "this number cannot be counted on".
+ *
+ * 上界另算：光"安全整数"还不够，因为进来的号是拿去**往上续**的 —— 档案里最大的那个号加一，就是现场要发的
+ * 下一个号。2^53-1 是能通过上面那句检查的号，而它加一之后不再安全，接着发的两个号会撞在一起（撞号就是
+ * `entryAt`/`cutFrom`/那一题的答话同时指向两格）。所以门要的是"还能从它往上数"的号：2^40 —— 一万刀的课是
+ * 1e4，重排一千轮是 1e7，这个号离任何一堂课隔着三个数量级，而离数坏隔着一万个。导出来给测试照着数。
+ */
+export const MAX_LEDGER = 2 ** 40;
+const count = (v: unknown): number | undefined =>
+  Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) <= MAX_LEDGER ? (v as number) : undefined;
+
+/**
+ * One tape entry with its ledger readable, or `undefined` when the entry cannot say where it sits.
+ * `seq` drops rather than defaults: a renumbered slot is a *moved* one (an `answer` on the tape points
+ * at its card by `seq`, and `gates`/`entryAt`/`cutFrom` all look numbers up with `===`/`<`), and `0` is
+ * a real used sequence number, not "no number". `turn` defaults to 0 — the cheapest wrong turn is one
+ * that says "this was staged in the first turn", which is a claim about a slot and not a rewrite of one.
+ * `group` becomes *absent*, which is the one field with an honest reading for "unreadable": a legacy
+ * tape has no batch numbers at all (`types.ts`), so a poisoned one plays as the older thing it is
+ * pretending to be. Turning it into `0` would nail a stranger's whole tape into one batch.
+ *
+ * 幂等，而且好的一格原样出去：`compile` 拿 op 本身当 `shotAt` 的键，门不许把引用换掉。
+ */
+export function guardEntry(entry: unknown): OpEntry | undefined {
+  if (!entry || typeof entry !== "object") return undefined;
+  const e = entry as Record<string, unknown>;
+  if (!e.op || typeof e.op !== "object") return undefined;
+  const seq = count(e.seq);
+  if (seq === undefined) return undefined;
+  const track = trackOf(e.track);
+  const turn = count(e.turn) ?? 0;
+  const group = count(e.group);
+  const op = guardOp(e.op as Op);
+  if (op === e.op && track === e.track && turn === e.turn && group === e.group) return entry as OpEntry;
+  const out: OpEntry = { seq, track, turn, op };
+  if (group !== undefined) out.group = group;
+  return out;
 }

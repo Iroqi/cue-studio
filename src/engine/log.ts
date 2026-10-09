@@ -1,4 +1,4 @@
-import { guardOp } from "./guard";
+import { guardEntry, guardOp } from "./guard";
 import type { OpEntry, Op, TrackId } from "./types";
 
 export const MAIN_TRACK: TrackId = "main";
@@ -100,16 +100,32 @@ export class OpLog {
    * a stranger — so the same gate applies here. Nothing is rejected: an unreadable field is defaulted
    * and the rest of the show plays.
    *
+   * 现在门也管账本（`guardEntry`）：`seq`/`turn`/`track`/`group` 这四个号不是几何，是**计数器读的东西**，
+   * 而下面那三行 reduce 就是拿它们往上续的。改前这里只查 `typeof e.seq === "number"`，而 JSON 的 `1e999`
+   * 解析成 `Infinity` 恰好是 number —— 于是 `Math.max(m, Infinity + 1)` 把批号永远钉在 Infinity：这一卷
+   * 档案里有一个批号是 Infinity，接着讲时新落的那一批也被发成 Infinity，两边同批 —— `here` 的视线于是越过
+   * 了批的边界，观众已经看过的那一格被后落的那一批改写（改前实测，走的是学习者真会点的那条 `#s=` 的路：
+   * `{旁白, 占位符}` 落笔时锚点 x=700，追加一批 `{往右一屏, 旁白}` 之后成了 x=2300，`ledger.test.ts` 钉的
+   * 就是这两个数）。`NaN` 是另一半：`Math.max(0, NaN)` 是 NaN，于是新落的每一格都同号。所以计数只从过完门
+   * 的号开始数。
+   *
    * 分批号一起进来：一支分享链接带着它当时是怎么一批一批落下的，重放于是和直播看见同一张台面（`here`
    * 的落点只读到本批为止，见 `compile.ts`）。老链接没有这个字段，整卷就是一批 —— 那正是它当年被排出来
    * 的样子。按最大号续上，因为按"接着讲"接上去的现场，新落的那一批不许和档案里某一批同号：同号就是
    * 同一批，那一格的落点就会又读到观众已经看过的那一段身后去。
    */
   restore(entries: OpEntry[]) {
-    this.entries = entries
-      .filter((e) => e && typeof e.seq === "number" && !!e.op)
-      .map((e) => ({ ...e, op: guardOp(e.op) }))
-      .sort((a, b) => a.seq - b.seq);
+    // 撞号也要在这一头管：两个号都说"我在这一格"，那这两格哪一格都不被承认 —— `entryAt`、`cutFrom`、
+    // 答话找题卡全都用 `===` 查号，撞了就是一个答案同时答了两张卡。号是别人编的，不许在这儿重编（那会把
+    // 带子上的引用挪到隔壁那一格），所以先落笔的那一句算数，后落的那一句当作说不清自己在哪儿。
+    const seen = new Set<number>();
+    const kept: OpEntry[] = [];
+    for (const e of entries.map((e) => guardEntry(e))) {
+      if (e === undefined || seen.has(e.seq)) continue;
+      seen.add(e.seq);
+      kept.push(e);
+    }
+    this.entries = kept.sort((a, b) => a.seq - b.seq);
     this.seq = this.entries.reduce((m, e) => Math.max(m, e.seq + 1), 0);
     this.turn = this.entries.reduce((m, e) => Math.max(m, e.turn), 0);
     this.group = this.entries.reduce((m, e) => Math.max(m, (e.group ?? -1) + 1), 0);
