@@ -368,9 +368,10 @@ export class Stage {
 
   /** Rewind to the previous beat boundary so an interrupted passage can be re-played. */
   rewindToBeatStart(within = 4000) {
-    const beats = this.compiled.cues.filter((c) => c.op.kind === "narrate" || c.op.kind === "beat");
-    const prev = [...beats].reverse().find((c) => c.t < this.t - 200 && this.t - c.t <= within);
-    this.seek(prev ? prev.t : Math.max(0, this.t - within));
+    // 窄表按 `t` 递增，"最近那一拍的开头"是一次二分。旧写法每按一次把整张 cue 表 `filter` 一份新
+    // 数组、`reverse`、再 `find` —— 带的价钱和它替上一件消掉的那笔是同一笔。
+    const prev = this.index.prevSpokenStart(this.t, within);
+    this.seek(prev === null ? Math.max(0, this.t - within) : prev);
     this.play();
   }
 
@@ -528,7 +529,10 @@ export class Stage {
       const p = this.compiled.props.get(id);
       const rev = p ? p.revisions[p.revisions.length - 1] : undefined;
       // A frame being drawn that has not reached the tape is being made for right now.
-      if (!rev || inThisBeat(rev.t)) n++;
+      // 已经在带子上的那一格还得站在观众眼前：落笔那一遍问过 `swept`（换场扫走的那一格不欠时钟
+      // 任何东西），在飞的这一遍以前没问 —— 于是一块被幕布压住的板上的空框仍然能让时钟停死，而
+      // 观众已经不在那块板上。
+      if (!rev || (inThisBeat(rev.t) && !this.swept(rev, cut))) n++;
     }
     for (const id of this.painting) {
       if (this.turnOpen || this.artFor.has(id)) continue; // already billed by the loops above
@@ -536,7 +540,7 @@ export class Stage {
       const rev = p ? p.revisions[p.revisions.length - 1] : undefined;
       // A background paint is owed to the beat it was placed in; a beat not reached yet bills
       // nothing here, or the clock would stand still for art belonging to a later line.
-      if (!rev || (inThisBeat(rev.t) && !painted(rev))) n++;
+      if (!rev || (inThisBeat(rev.t) && !painted(rev) && !this.swept(rev, cut))) n++;
     }
     return n;
   }
@@ -648,6 +652,36 @@ export class Stage {
     return false;
   }
 
+  /**
+   * 这几刀点的名，观众在**它们各自落下的那一刻**看不见哪些 —— 一次问完，按点名的次序、去掉重复。
+   *
+   * 上一件把这句对账交给了 `agent/loop.ts`，而它那一头是 `compiled.cues.find((c) => c.op === askedBy)`
+   * 加一次 `visibleName`。找的那个用法恰恰是**找不到才说话**，于是点一个空名字就要把整张 cue 表走完
+   * （128 001 条的带子实测 1.17ms/次，命中同一个数 —— 钱在 `find` 上），而导演一轮要点几十次名。带子只增不改，"这一刀
+   * 落在哪一刻"在排好的那一刻就有答案（`Compiled.shotAt`），所以这一问和它下面那句 `visibleName`
+   * 一起搬到台上 —— 对账的规矩只许有一处说法。
+   */
+  blindNames(ops: Op[]): string[] {
+    const blind: string[] = [];
+    const seen = new Set<string>();
+    const end = this.compiled.duration;
+    for (const op of ops) {
+      if (op.kind !== "camera") continue;
+      // 问的是这一刻的台，不是带子尽头：`here`、`discard`、换场都能让同一个名字在两刻之间换了说法。
+      const at = this.compiled.shotAt.get(op) ?? end;
+      const names = [
+        ...(op.target ? (Array.isArray(op.target) ? op.target : [op.target]) : []),
+        ...(op.follow ? [op.follow] : []),
+      ];
+      for (const id of names) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        if (!this.visibleName(id, at)) blind.push(id);
+      }
+    }
+    return blind;
+  }
+
   /** The board the show is standing on at `t`, or null before its first cut. */
   boardAt(t: number): string | null {
     return this.cutAt(t)?.board ?? null;
@@ -672,7 +706,10 @@ export class Stage {
       const streaming = pv ? { svg: pv.svg, html: pv.html, scene3d: rev.scene3d } : rev;
       out.push({
         id: p.id,
-        scene: p.scene,
+        // 站着那一格的板名，不是道具最后被挪去了哪：`standing.ts` 分板、镜头取景、导演快照说的都是
+        // 前者，一帧的名单以前报的是后者 —— 于是同一卷带子上 `a` 在两处两个板名上，而"这一件东西
+        // 此刻在哪块板上"是一帧要拿去画的东西。
+        scene: rev.scene,
         box,
         svg: pv?.svg ?? rev.svg,
         html: pv?.html ?? rev.html,
@@ -761,8 +798,11 @@ export class Stage {
     for (const { prop: p, rev: r } of this.standing.standing(t)) {
       const mo = this.index.motionFor(p.id, t);
       const off = this.swept(r, cut) ? "·已被换场扫走（recall 才带得回来）" : "";
+      // 一条关系也是一个时刻：`link` 落在哪一刻就归哪一刻，倒带回到那一刀之前不许报出它 —— 它指着的
+      // 那个名字此刻可能还没上台。落下次序，所以这是一段前缀。
+      const ties = p.links.filter((l) => l.at <= t);
       live.push(
-        `  ${p.id} [${r.scene}${off}] ${r.label} @(${Math.round(r.box.x)},${Math.round(r.box.y)} ${Math.round(r.box.w)}x${Math.round(r.box.h)})${r.scene3d ? ` [3D${r.scene3d.interactive ? "·可拖" : ""}]` : ""}${mo ? ` moving:${(mo.op as MotionOp).mode}(anchor stands)` : ""}${p.links.length ? ` links:${p.links.map((l) => l.relation + "->" + l.to).join(",")}` : ""}`,
+        `  ${p.id} [${r.scene}${off}] ${r.label} @(${Math.round(r.box.x)},${Math.round(r.box.y)} ${Math.round(r.box.w)}x${Math.round(r.box.h)})${r.scene3d ? ` [3D${r.scene3d.interactive ? "·可拖" : ""}]` : ""}${mo ? ` moving:${(mo.op as MotionOp).mode}(anchor stands)` : ""}${ties.length ? ` links:${ties.map((l) => l.relation + "->" + l.to).join(",")}` : ""}`,
       );
     }
     const scenes = [...c.scenes.entries()].map(([s, b]) => `${s}=(${Math.round(b.x)},${Math.round(b.y)} ${Math.round(b.w)}x${Math.round(b.h)})`).join(" ");

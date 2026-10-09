@@ -683,24 +683,16 @@ export class Teacher {
    * A camera that names what the audience cannot see simply does not move, and a silent no-op reads to
    * the model as a cut that happened. Say which name it could not find — and that a prop left on the
    * board the show walked away from is exactly as invisible as one never painted.
+   *
+   * 问哪一刻、怎么问，全在台上一句 `blindNames` 里（那里读 `Compiled.shotAt`）：这一头以前自己拿
+   * `compiled.cues.find((c) => c.op === askedBy)` 找时刻，而"找不到才说话"那个用法每点一次空名字
+   * 就把整张 cue 表走完一遍。对账的规矩只许有一处说法。
    */
   private blindCamera(ops: Op[]): string | null {
-    const wanted = new Map<string, Op>();
-    for (const op of ops) {
-      if (op.kind !== "camera") continue;
-      for (const id of Array.isArray(op.target) ? op.target : op.target ? [op.target] : []) wanted.set(id, op);
-      if (op.follow) wanted.set(op.follow, op);
-    }
-    const blind = [...wanted].filter(([id, op]) => !this.audienceHas(id, op));
+    const blind = this.stage.blindNames(ops);
     return blind.length
-      ? `镜头点名的东西观众看不见：${blind.map(([id]) => id).join("、")} —— 要么还没画，要么还留在上一块板上（只有 recall 带得过来）。画面这一拍不会动。`
+      ? `镜头点名的东西观众看不见：${blind.join("、")} —— 要么还没画，要么还留在上一块板上（只有 recall 带得过来）。画面这一拍不会动。`
       : null;
-  }
-
-  /** Was this name in front of the audience when the camera asked: painted by then and not swept off by a cut. */
-  private audienceHas(id: string, askedBy: Op): boolean {
-    const cue = this.stage.compiled.cues.find((c) => c.op === askedBy);
-    return this.stage.visibleName(id, cue ? cue.t : this.stage.compiled.duration);
   }
 
   /**

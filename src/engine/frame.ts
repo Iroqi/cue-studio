@@ -38,6 +38,18 @@ function firstAbove(a: number[], v: number): number {
   return lo;
 }
 
+/** 第一条 `a[i] >= v` 的下标；`a` 必须单调不减。 */
+function firstAtOrAfter(a: number[], v: number): number {
+  let lo = 0;
+  let hi = a.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (a[m] >= v) hi = m;
+    else lo = m + 1;
+  }
+  return lo;
+}
+
 /** 一帧的画框：已经站定的那一刀的落点，和正在滑的那一刀。 */
 export interface CameraFrame {
   /** 这一刻之前最后一条走完的镜头/幕布；一条都还没走完就是 null（画面还是初始那一屏）。 */
@@ -67,6 +79,10 @@ export class TapeIndex {
 
   private readonly narrT: number[] = [];
   private readonly narrCues: Cue[] = [];
+
+  /** 会被 ⟲ 一拍倒回去的那些拍（旁白与沉默）。占时钟，所以互不重叠、`t` 递增。 */
+  private readonly spokenT: number[] = [];
+  private readonly spokenCues: Cue[] = [];
 
   /** 幕布单独一条窄表：它占时钟，彼此不重叠。画框那条表里它可能排在一条更短的镜头之后，
    * 所以"这一刻盖没盖着幕布"不能借画框的答案。 */
@@ -119,6 +135,12 @@ export class TapeIndex {
       if (kind === "narrate") {
         this.narrT.push(c.t);
         this.narrCues.push(c);
+      }
+      if (kind === "narrate" || kind === "beat") {
+        // ⟲ 一拍问的是"上一句说到哪儿"。占时钟，所以这条窄表互不重叠、`t` 递增 —— 二分就够，
+        // 以前那一句每按一次把整张 cue 表 `filter` 一遍再 `reverse` 再 `find`。
+        this.spokenT.push(c.t);
+        this.spokenCues.push(c);
       }
       if (kind === "motion") {
         const list = this.motionById.get(c.op.id);
@@ -205,6 +227,21 @@ export class TapeIndex {
     if (i < 0) return null;
     const c = this.narrCues[i];
     return c.end > t ? c : null;
+  }
+
+  /**
+   * ⟲ 一拍该倒回去的那个时刻：`t` 之前至少 200ms、最近的那一句（或那一段沉默）的开头，`within`
+   * 之内找不到就是 null。
+   *
+   * 旧写法每次按下把整张 cue 表 `filter` 出一份新数组、`reverse`、再 `find`。占时钟的窄表按 `t`
+   * 递增，"最近的一条不超过的"是一次二分；`t - c.t <= within` 只对最大那一格问一次就够了 ——
+   * 比它更早的那些离得更远，那条筛选本来也筛不住它们。
+   */
+  prevSpokenStart(t: number, within: number): number | null {
+    const i = firstAtOrAfter(this.spokenT, t - 200) - 1;
+    if (i < 0) return null;
+    const c = this.spokenCues[i];
+    return t - c.t <= within ? c.t : null;
   }
 
   /**

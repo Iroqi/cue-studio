@@ -229,9 +229,9 @@ function oneOf<T extends string>(v: unknown, allowed: Set<string>, dflt: T): T {
 
 /**
  * Apply corrections without replacing the object. Identity matters here: the show's own code compares
- * ops by reference (`loop.ts` finds the cue an op became so it can ask "was this name on stage when the
- * camera asked?"), and a guard that always re-wraps would silently break that lookup. So a well-formed
- * op goes back out as the same object it came in.
+ * ops by reference (`compile.ts` keys `Compiled.shotAt` on the camera op itself, so the director's
+ * camera command can be asked "which second did you land in?"), and a guard that always re-wraps would
+ * silently break that lookup. So a well-formed op goes back out as the same object it came in.
  */
 function revise<T extends object>(op: T, changes: Partial<T>): T {
   for (const k of Object.keys(changes) as (keyof T)[]) {

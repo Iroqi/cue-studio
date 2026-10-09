@@ -262,12 +262,27 @@ export interface Revision {
   partial: boolean;
 }
 
+/**
+ * 一次 `link`：导演在带子上某一刀落下的关系。
+ *
+ * `at` 是它落下的那一刻。以前这一格只存 `to` 和 `relation`，于是 `link` 是这张表上唯一**没有时刻**
+ * 的账：`agentSnapshot` 在任何 `t` 都把它读成"已经声明过了"。倒带回到那一刀之前，快照照样报出那条
+ * 关系，而它指着的那个名字此刻还没上台。一次外观是一段窗口，一条 cue 是一段窗口，一条关系也是
+ * 一个时刻 —— 词汇里不该有第四种说法。
+ */
+export interface Link {
+  at: number;
+  to: string;
+  relation: string;
+}
+
 export interface Prop {
   id: string;
   scene: string;
   /** 落下顺序，也是层叠顺序。时间上单调：一次外观总在它身后那一次之前。 */
   revisions: Revision[];
-  links: { to: string; relation: string }[];
+  /** 带子上的次序，所以 `at` 递增："到这一刻为止声明了哪些关系"是这一列的一段前缀。 */
+  links: Link[];
 }
 
 export interface Cue {
@@ -314,4 +329,14 @@ export interface Compiled {
   beats: Beat[];
   duration: number;
   lastSeq: number;
+  /**
+   * 每一刀镜头落在哪一刻，按 op 引用问。
+   *
+   * 问这句的是"镜头点名的东西观众看不看得见"那一头：观众看不见时它要的是**找不到**，而以前那句写成
+   * `cues.find((c) => c.op === askedBy)` —— 找不到就把整张 cue 表走完，每一刀付一次（128 000 条的带子
+   * 点一次空名字 1.17ms，命中同一个数，而导演一轮要点几十次名）。带子只增不改，这一问在排好的那一刻
+   * 就该有答案。按引用问靠的是 `guard.revise` 那条"改不动就不换对象"的规矩（`guard.ts`），所以只有
+   * 真的被修过的那一刀才会换了它的 `t`。只记会点名的那一类刀：别的读者问的是时刻，不是刀。
+   */
+  shotAt: Map<CameraOp, number>;
 }
