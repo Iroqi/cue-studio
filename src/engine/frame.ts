@@ -61,13 +61,12 @@ export interface CameraFrame {
 /**
  * 带子的位置索引：只回答"这一刻哪一格在跑"，不算画面、不碰 DOM，所以它的对错可以单独问。
  * 建一次是 O(带子)，只在带子动的时候建；一帧问的是几次二分加"同时在跑的几格"。
+ *
+ * 一类的问句一条窄表，窄表带自己的前缀最大值。这里没有"什么都能问"的通用区间：那一版留过一份
+ * `[第一条前缀最大 > t, 第一条 t > t)`，它的前缀最大是**整张表**的，所以一条合法长寿的叠层就能把
+ * 左边界顶回表头 —— 于是每一帧把整张 cue 表走一遍，"带子的长度不进这一帧"当场失效。
  */
 export class TapeIndex {
-  private readonly cues: Cue[];
-  private readonly cueT: number[];
-  /** 前缀最大 `end`：某处 <= t，就说明这一处及之前的 cue 都走完了。 */
-  private readonly cueMaxEnd: number[];
-
   /** 镜头与幕布：一帧的画框只由这条窄表决定。 */
   private readonly camCues: Cue[] = [];
   private readonly camT: number[] = [];
@@ -89,6 +88,19 @@ export class TapeIndex {
   private readonly veilT: number[] = [];
   private readonly veilCues: Cue[] = [];
 
+  /*
+   * 强调叠层也各有一条窄表，不借通用那张 `running` 的区间。借过一版，而它把一帧的价钱写成了"带子有
+   * 多长"：通用区间靠**前缀最大 `end`** 定左边界，那一份把整表所有 cue 都算进去了，所以只要有一刀叠层
+   * 比播放头所在的那一节带子更长寿（`duration` 的门封在 120000ms，一堂短课整个盖在里面），左边界就
+   * 退回表头，一帧把整张 cue 表走一遍。探针量的正是这一条：一条 120 秒的 `highlight` 排在 2 000 /
+   * 20 000 / 120 000 条的带子头上，站在带子中段那一帧按 4 002 / 40 002 / 180 003 格 —— 修前那一条
+   * 「带子长 16 倍，一帧多走的路一格都不许多」根本没有覆盖它（同一拍里落的叠层，`end` 超不出这一拍，
+   * 通用区间本来就窄），所以这一件给它补一条窄表：按**自己的**前缀最大值二分。
+   */
+  private readonly hlT: number[] = [];
+  private readonly hlCues: Cue[] = [];
+  private readonly hlMaxEnd: number[] = [];
+
   /** 走过的换场：`flip` 是幕布盖住整块板的那一刻；换场占时钟，所以 `flip` 递增。 */
   private readonly flips: number[] = [];
   private readonly boards: string[] = [];
@@ -103,18 +115,13 @@ export class TapeIndex {
 
   constructor(compiled: Compiled) {
     this.compiled = compiled;
-    this.cues = compiled.cues;
-    const n = this.cues.length;
-    this.cueT = new Array(n);
-    this.cueMaxEnd = new Array(n);
+    const cues = compiled.cues;
+    const n = cues.length;
     this.camMaxEnd = [];
-    let maxEnd = -Infinity;
     let camMax = -Infinity;
+    let hlMax = -Infinity;
     for (let i = 0; i < n; i++) {
-      const c = this.cues[i];
-      this.cueT[i] = c.t;
-      if (c.end > maxEnd) maxEnd = c.end;
-      this.cueMaxEnd[i] = maxEnd;
+      const c = cues[i];
       const kind = c.op.kind;
       if (kind === "camera" || kind === "transition") {
         this.camCues.push(c);
@@ -142,6 +149,14 @@ export class TapeIndex {
         this.spokenT.push(c.t);
         this.spokenCues.push(c);
       }
+      if (kind === "highlight") {
+        // 窄表自带前缀最大值：并集那一份把整表都算进去，所以一条长寿的叠层能把通用区间的左边界
+        // 顶回表头。这一条只数强调自己。
+        this.hlT.push(c.t);
+        this.hlCues.push(c);
+        if (c.end > hlMax) hlMax = c.end;
+        this.hlMaxEnd.push(hlMax);
+      }
       if (kind === "motion") {
         const list = this.motionById.get(c.op.id);
         if (list) list.push(c);
@@ -157,23 +172,25 @@ export class TapeIndex {
   }
 
   /**
-   * 这一刻还在跑的格子区间 `[from, to)`：`from` 之前的前缀最大 `end` 都不超过 `t`（全都走完了），
-   * `to` 之后的一条还没落下。带子的长度不进这一帧。
+   * 这一刻在跑的强调叠层：同一道具取**最早落下**的那条（旧写法 `filter(...).find(...)` 同解）。
+   *
+   * 走自己那条窄表，不借 `running` 的区间。借过一版，那一版把一帧的价钱写回成"带子有多长"：通用区间
+   * 的左边界由**整表**的前缀最大 `end` 二分出来，所以只要带子上有一刀叠层比播放头站着的那一段还
+   * 长寿，左边界就退回表头 —— 一条 120 秒的 `highlight`（`guard` 封在 `MAX_MS`，合法输入）盖住一堂
+   * 短课，站在带子中段那一帧就按 4 002 / 40 002 / 180 003 格（带子 2 001 / 20 001 / 120 001 条）。
+   * 旧那条「带子长 16 倍，一帧多走的路一格都不许多」量不到它：那里的叠层落在同一拍里，`end` 超不出
+   * 这一拍，通用区间本来就窄。所以这一件改的是**问法**：按强调自己的前缀最大值二分，一帧只付"这一刻
+   * 在跑的强调有几条"。
    */
-  running(t: number): [number, number] {
-    const from = firstAbove(this.cueMaxEnd, t);
-    const to = firstAbove(this.cueT, t);
-    return to > from ? [from, to] : [0, 0];
-  }
-
-  /** 这一刻在跑的强调叠层：同一道具取**最早落下**的那条（旧写法 `filter(...).find(...)` 同解）。 */
   highlightsAt(t: number): Map<string, string> {
     const out = new Map<string, string>();
-    const [from, to] = this.running(t);
+    const from = firstAbove(this.hlMaxEnd, t);
+    const to = firstAbove(this.hlT, t);
     for (let i = from; i < to; i++) {
-      const c = this.cues[i];
-      if (c.op.kind !== "highlight" || c.end <= t) continue;
-      if (!out.has(c.op.target)) out.set(c.op.target, c.op.style);
+      const c = this.hlCues[i];
+      if (c.end <= t) continue;
+      const id = (c.op as { target: string }).target;
+      if (!out.has(id)) out.set(id, (c.op as { style: string }).style);
     }
     return out;
   }

@@ -257,6 +257,92 @@ describe("渲染一帧在 cue 表上路过多少格", () => {
 });
 
 /*
+ * 上面那两条量的是"每一拍里落的叠层"，而那一头通用区间本来就窄（叠层的 `end` 出不了这一拍），
+ * 所以「带子长 16 倍，一帧多走的路一格都不许多」是绿的 —— 而它守的那句话当时已经不当用了一整件：
+ * `highlightsAt` 借的通用区间，左边界拿**整张 cue 表**的前缀最大 `end` 二分，而叠层的 `duration`
+ * 合法地能盖住整堂课（`guard` 把它封在 120000ms）。所以只要带子上有一刀比播放头站着的那一段更长寿，
+ * 左边界就一路退回表头，一帧把整张表走一遍。探针量的正是这一条（同一支探针对着修前的代码）：
+ *
+ *   一条 120 秒的 `highlight` 落在头上，带子 2 001 / 20 001 / 120 001 条 cue，站在 60 000ms 那一帧
+ *   修前按 4 002 / 40 002 / 180 003 格（带子长 60 倍，路过也长 60 倍）
+ *   修后 0 格 —— 强调有自己的窄表和自己的前缀最大值。
+ *
+ * 这一节钉三件事：格子数不许随带子长（价钱），长寿的叠层仍然算在跑、而它盖住的别家短叠层不许跟着
+ * 复活（形状，两个方向各一条），以及那条窄表和"把整条带子扫一遍"同解（对账）。
+ */
+describe("一条合法长寿的叠层，不许把整张 cue 表拖进每一帧", () => {
+  /** 头上那一刀 120 秒的强调之外，全是 1ms 的沉默：让那一条成为整张表里最长寿的格子。 */
+  const longOverlay = (nBeats: number): OpEntry[] => tape(mark("a", 120_000), ...Array.from({ length: nBeats }, () => beat(1)));
+  const markStyle = (target: string, duration: number, style: string): Op => ({ kind: "highlight", target, style, duration }) as Op;
+
+  /**
+   * 数的是**问一句"这一刻哪些强调在跑"在 cue 表上路过几格**。建索引那一遍按的是整张表，那是带子
+   * 动一次付一次的价钱（本来就该是 O(带子)），所以开关先关着；建好之后打开，只剩那一问的钱。
+   */
+  function overlayCost(c: Compiled, t: number): { cells: number; on: Map<string, string> } {
+    let counting = false;
+    let cells = 0;
+    const counted: Cue[] = new Proxy(c.cues, {
+      get(arr, k) {
+        if (counting && typeof k === "string" && /^\d+$/.test(k)) cells++;
+        return (arr as never)[k as never];
+      },
+    });
+    const ix = new TapeIndex({ ...c, cues: counted });
+    counting = true;
+    const on = ix.highlightsAt(t);
+    return { cells, on };
+  }
+
+  it("带子长 60 倍，问这一帧在 cue 表上多走的路一格都不许多", () => {
+    const small = overlayCost(compile(longOverlay(2_000)), 60_000);
+    const big = overlayCost(compile(longOverlay(120_000)), 60_000);
+    expect(big.on.get("a")).toBe("pulse");
+    // 修前：2 001 与 120 001 格 —— 那一问按的是带子的长度，不是台上在跑的强调。
+    expect(small.cells).toBe(0);
+    expect(big.cells).toBe(0);
+  });
+
+  it("护栏：短的那条走完了就不算在跑，哪怕它排在长寿那条后面", () => {
+    // 窄表的区间按自己的前缀最大值定左边界，所以区间里会留下一条已经走完的格子（`end <= t`）。
+    // 旧写法靠同一个筛选，这一条钉的是那一句筛子不许整句删掉。
+    const c = compile(tape(mark("a", 120_000), mark("b", 100), line("说一句", 1_000)));
+    const on = new TapeIndex(c).highlightsAt(500);
+    expect(on.get("a")).toBe("pulse");
+    expect(on.has("b")).toBe(false);
+  });
+
+  it("护栏：还没落下的那一刀不算在跑，哪怕它比播放头站着的那一刻更长", () => {
+    const c = compile(tape(line("说一句", 1_000), mark("a", 120_000)));
+    expect(new TapeIndex(c).highlightsAt(500).size).toBe(0);
+  });
+
+  it("同一道具两刀都还在跑时取最早落下那条，走完的那条不许反过来盖住它", () => {
+    const both = new TapeIndex(compile(tape(markStyle("a", 400, "outline"), markStyle("a", 120_000, "shake"), line("说一句", 1_000)))).highlightsAt(200);
+    expect(both.get("a")).toBe("outline");
+    // 到 500ms 前一条已经走完，剩下的就是后落下的那一刀 —— 左边界随前缀最大值往前走。
+    const later = new TapeIndex(compile(tape(markStyle("a", 400, "outline"), markStyle("a", 120_000, "shake"), line("说一句", 1_000)))).highlightsAt(500);
+    expect(later.get("a")).toBe("shake");
+  });
+
+  it("和整条带子的扫描同解：随便挑一刻，两边点亮的道具一模一样", () => {
+    const c = compile(longOverlay(400));
+    const ix = new TapeIndex(c);
+    let checks = 0;
+    for (let t = 0; t <= c.duration; t += 997) {
+      const want = new Map<string, string>();
+      for (const x of c.cues) {
+        if (x.op.kind !== "highlight" || x.t > t || x.end <= t) continue;
+        if (!want.has(x.op.target)) want.set(x.op.target, x.op.style);
+      }
+      expect(ix.highlightsAt(t)).toEqual(want);
+      checks++;
+    }
+    expect(checks).toBeGreaterThan(100);
+  });
+});
+
+/*
  * 索引不许改答案。这里把它和**旧写法**（整条带子扫一遍）在同一个 t 上比一遍 ——
  * 上面那些形状钉的是几个代表性的瞬间，这一条钉的是"随便挑一刻，两边的答案一模一样"。
  */
