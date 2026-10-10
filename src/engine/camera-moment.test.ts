@@ -270,15 +270,19 @@ describe("镜头的价钱：一次点名不许走整张道具表", () => {
   it("导演逐拍追加付的那一笔：点名那条不许比不点名那条贵过 3 倍", () => {
     // 导演是一笔一笔往带子上加的，而 `log.append` 每来一笔把整条带重解一遍 —— 这才是他在台上付的钱。
     // 改前实测（同一台机器两次独立跑）：3000 拍的带子上追加 20 拍，带点名的那条 1017ms / 1079ms，不带
-    // 点名的 113ms / 117ms（约 9 倍 —— 每拍重解都在按点名次数 × 道具总数付钱）。改后同一批带子分别
-    // 155ms 与 117ms，比值 1.3。
+    // 点名的 113ms / 117ms（约 9 倍 —— 每拍重解都在按点名次数 × 道具总数付钱）。
+    //
+    // 追加的笔数从 20 提到 200：两本索引都续排之后，20 拍在 3000 拍的带子上只付 0.5ms —— 那句
+    // `toBeGreaterThan(1)` 是**探针不许空转**的地板，不是常数，带子便宜到它以下就得换个刻度问。
+    // 同一台机器上同一批 200 笔：本件改前 132.0ms（带点名）/ 135.6ms（不带），改后 3.2 / 2.5ms。
+    // 比值那一头两样都过得了 3 —— 这条钉的一直是"点名不比旁白贵一个量级"，省下的是绝对价钱。
     const appendCost = (mk: (i: number) => Op[]): number => {
       let out = Infinity;
       for (let k = 0; k < 3; k++) {
         const s = new Stage();
         s.load(entries(3000, mk));
         const started = performance.now();
-        for (let i = 3000; i < 3020; i++) s.append(mk(i), MAIN_TRACK);
+        for (let i = 3000; i < 3200; i++) s.append(mk(i), MAIN_TRACK);
         out = Math.min(out, performance.now() - started);
       }
       return out;

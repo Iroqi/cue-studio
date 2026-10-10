@@ -11,6 +11,7 @@ import type {
   OpEntry,
   Prop,
   Revision,
+  Touched,
   TransitionOp,
 } from "./types";
 import { inkBox } from "./ink";
@@ -95,28 +96,42 @@ export function standingAt(revisions: Revision[], t: number): Revision | undefin
 }
 
 /**
- * 落下新的一次外观，顺手把上一次那段窗口收在这一刻。
+ * 落下新的一次外观，顺手把上一次那段窗口收在这一刻，并把**被收起的那一格**交回调用方。
  *
  * 同一个道具的窗口因此**铺满**时间线：不重叠、按 `t` 递增，下一件才二分得动。填占位符那一笔不走这里
  * —— 它把最后一格原地换掉（"描述它的那句已经念完了，图才补上"是同一段窗口，不是新的一格），否则两条
  * 同样 `t` 的窗口并排站着，二分出来的区间会退化到表头，一帧把整板重走一遍。
+ *
+ * 交回 `prev` 是为了 `Compiled.touched` 那一笔：窗口的右端是**回头**补上的，光读道具表长出来的那一截
+ * 看不见它（`types.ts` 的 `Touched`）。
  */
-export function layRevision(p: Prop, rev: Revision): void {
+export function layRevision(p: Prop, rev: Revision): Revision | undefined {
   const prev = p.revisions.length ? p.revisions[p.revisions.length - 1] : undefined;
-  if (prev && prev.off === undefined && prev.t <= rev.t) prev.off = rev.t;
+  if (prev && prev.off === undefined && prev.t <= rev.t) {
+    prev.off = rev.t;
+    p.revisions.push(rev);
+    return prev;
+  }
   p.revisions.push(rev);
+  return undefined;
 }
 
 /**
- * `discard` 落在道具身上：给**此刻站着的那一次外观**盖上结束时刻。
+ * `discard` 落在道具身上：给**此刻站着的那一次外观**盖上结束时刻，并把**盖上那一格**交回调用方。
  *
  * 已经收过就不动 —— 一个名字不会因为在带子上被多念了一刀就更消失一次；而重画（`build`/`patch`）
  * 落下的是新的一次外观，它自带一个新窗口。所以 `recall` 那份 `{...prev}` 必须抹掉 `off`：原样抄
  * 过来就是"带回来的东西一上台就已经是撤着的"。
+ *
+ * 交回那一格是为了 `Compiled.touched`：收笔是回头改已经躺在表里的一格，光读道具表的尾巴看不见它。
  */
-export function markOff(revisions: Revision[], at: number): void {
+export function markOff(revisions: Revision[], at: number): Revision | undefined {
   const standing = standingAt(revisions, at);
-  if (standing && standing.off === undefined) standing.off = at;
+  if (standing && standing.off === undefined) {
+    standing.off = at;
+    return standing;
+  }
+  return undefined;
 }
 
 function padded(b: Box, f = 1.25): Box {
@@ -485,6 +500,15 @@ export function cueMs(op: Op): number {
  */
 export class Interpreter {
   private readonly props = new Map<string, Prop>();
+  /**
+   * 「哪一个道具的台面动过」的流水，只长尾巴。见 `types.ts` 的 `Touched`。
+   *
+   * 记它的理由不是"这样读的人省事"，而是**读的人根本没有别的办法**：一次外观的窗口右端会被身后那一刀
+   * 补上、占位符会被原地换掉，那些格子早就躺在表里了 —— 光看"道具表长出来的那一截"看不见它们，而每批
+   * 把整张道具表重扫一遍去找哪一格动过，恰恰是这一件要消掉的价钱。所以由知道改动的那一方（这台机器）
+   * 记一笔，`StandingIndex` 只吸收新接的那一截。
+   */
+  private readonly touched: Touched[] = [];
   private readonly cues: Cue[] = [];
   private readonly gates: Gate[] = [];
   private readonly beats: Beat[] = [];
@@ -743,6 +767,9 @@ export class Interpreter {
     if (!p) {
       p = { id, scene, revisions: [], links: [] };
       this.props.set(id, p);
+      // 道具进表 = 层叠次序里多了一个号。`link` 只点了名的那一格也走这里，所以号在**进表**那一刻发，
+      // 不在第一次落笔那一刻发 —— 续排的索引按这条流水发号，才能和"扫一遍道具表"发出同一套号。
+      this.touched.push({ kind: "prop", prop: p });
     }
     return p;
   }
@@ -843,8 +870,17 @@ export class Interpreter {
             note: op.kind === "build" ? op.note : prev?.note,
             partial: !(op.svg || op.html || op.scene3d),
           };
-          if (fillingPlaceholder) p.revisions[p.revisions.length - 1] = revision;
-          else layRevision(p, revision);
+          if (fillingPlaceholder) {
+            p.revisions[p.revisions.length - 1] = revision;
+            this.touched.push({ kind: "fill", prop: p, old: prev, rev: revision });
+          } else {
+            // 先记"上一格的窗口收上了"，再记"新格落下了"：同一刻里收走总排在落下之前（窗口的左闭右开），
+            // 流水的次序就是事件流的次序 —— 反过来会让读台面那一头先 put 再 take，在同一道具同一刻
+            // 留下一格挂在旧板头上。
+            const closed = layRevision(p, revision);
+            if (closed) this.touched.push({ kind: "close", prop: p, rev: closed });
+            this.touched.push({ kind: "lay", prop: p, rev: revision });
+          }
           // 迟到的那一笔落在一段已经收掉的窗口里：观众眼前没有多出一格，镜头脚下也不许多算一格。
           if (onstageAt(revision, start)) this.ground.put(op.id, revision);
           this.syncEnd(p);
@@ -859,7 +895,9 @@ export class Interpreter {
           // 于是 recall 带回台上的东西一落地就是撤着的 —— 道具闪一下然后消失，而带子上没有第二刀
           // discard。一次 recall 就是一次新的落笔，它自带一个新窗口。
           const back: Revision = { ...prev, t: start, off: undefined, scene: src.scene, box: this.placedBox(entries, op.box, op.here, i, src.scene) };
-          layRevision(src, back);
+          const closed = layRevision(src, back);
+          if (closed) this.touched.push({ kind: "close", prop: src, rev: closed });
+          this.touched.push({ kind: "lay", prop: src, rev: back });
           this.ground.put(op.id, back);
           this.syncEnd(src);
           break;
@@ -867,7 +905,8 @@ export class Interpreter {
         case "discard": {
           const p = this.props.get(op.id);
           if (!p) break;
-          markOff(p.revisions, start);
+          const closed = markOff(p.revisions, start);
+          if (closed) this.touched.push({ kind: "close", prop: p, rev: closed });
           this.ground.off(op.id);
           this.syncEnd(p);
           break;
@@ -996,6 +1035,7 @@ export class Interpreter {
       beats: this.beats,
       duration: Math.max(this.t, this.tails),
       lastSeq: this.lastSeq,
+      touched: this.touched,
       shotAt: this.shotAt,
     };
   }

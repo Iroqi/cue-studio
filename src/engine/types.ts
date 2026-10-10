@@ -294,6 +294,37 @@ export interface Prop {
   links: Link[];
 }
 
+/**
+ * 「台面的哪一格动过」的一笔，按发生的次序记进 `Compiled.touched`，只长尾巴。
+ *
+ * 一次外观的事实会在身后的刀上被改：落下新格时上一格的窗口收在这一刻（`layRevision`）、`discard` 给
+ * 此刻站着的那一格补上结束时刻（`markOff`）、迟到的补画把最后一格**原地换掉**（`build` 的空框由 `patch`
+ * 填上）。这三处都不加长道具表、也不加长那一列，只改躺在**那一列尾巴上**的一格 —— 除了最后一格，每一格
+ * 的 `off` 早在它身后那一格落笔时就定下了。所以光读"道具表长出来的那一截"看不见它们，而"每批重扫整张
+ * 道具表去找哪一格被改过"恰恰是要消掉的那笔价钱。
+ *
+ * 于是由**知道改动的那一方**记一笔：解释器走到哪一笔就接一笔，读台面那一头（`StandingIndex`）只吸收新
+ * 接的尾巴。四种：
+ *  - `prop`：这个名字刚进道具表（`build` 第一次落下的名字、`link` 只点了名）。层叠次序数的是道具在表里
+ *    的位置，所以号由这一笔记下。
+ *  - `lay`：落下新格（`build`、非占位的 `patch`、`recall`）。
+ *  - `close`：某一格的窗口被身后那一刀收上了 `off`（`markOff` 那一笔、`layRevision` 顺手收上一格那一笔）。
+ *  - `fill`：占位符被原地换掉 —— 落笔时刻与窗口都不变，换的是那一格的对象（内容、所在的板）。
+ *
+ * 为什么是"哪一格动了"而不是"现在的台面长什么样"：一笔动过的格子，它的时刻就是**这一笔落下的那一刻**
+ * （`layRevision` 把上一格收在新格的落笔时刻、`markOff` 收在 `discard` 那一刻、`fill` 不带时刻），所以
+ * 顺着这一列往下读，读到的时刻序列和不带这一列、每批重扫整张道具表算出来的序列同序。反过来若让续排去
+ * **读那一格现在的 `off`**，同一批里身后那一刀补上的值会先被读到 —— 事件流当场不再单调，游标的前提破产。
+ *
+ * 一条规矩钉在这里：**会动台面事实的每一笔都得记**。新增一种改法忘了接上，续排的就读不到它 —— 逐批
+ * 续排和"拿这一批为止的台面现建一本"对账钉的就是这句话。
+ */
+export type Touched =
+  | { kind: "prop"; prop: Prop }
+  | { kind: "lay"; prop: Prop; rev: Revision }
+  | { kind: "close"; prop: Prop; rev: Revision }
+  | { kind: "fill"; prop: Prop; old: Revision; rev: Revision };
+
 export interface Cue {
   t: number;
   end: number;
@@ -338,6 +369,10 @@ export interface Compiled {
   beats: Beat[];
   duration: number;
   lastSeq: number;
+  /**
+   * 动过台面的那些道具，按发生的次序、只长尾巴。见 `Touched`。
+   */
+  touched: Touched[];
   /**
    * 每一刀镜头落在哪一刻，按 op 引用问。
    *

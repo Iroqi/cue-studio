@@ -1,7 +1,7 @@
 import { compile, perform, type Interpreter } from "./compile";
 import { MAIN_TRACK, OpLog } from "./log";
 import { TapeIndex, reindex } from "./frame";
-import { StandingIndex } from "./standing";
+import { StandingIndex, restand } from "./standing";
 import { displaced, motionOffset } from "./motion";
 import { SETTLE_MS } from "./speech";
 import type { Box, Compiled, Cue, Gate, MotionOp, Op, OpEntry, Revision, Scene3DSpec, TrackId } from "./types";
@@ -193,7 +193,7 @@ export class Stage {
     this.machineMain = main.it;
     this.compiledMain = main.compiled;
     this.indexMain = reindex(this.indexMain, this.compiledMain);
-    this.standingMain = new StandingIndex(this.compiledMain);
+    this.standingMain = restand(this.standingMain, this.compiledMain);
     const asides = this.log.asides();
     const aside = asides[asides.length - 1];
     if (aside) {
@@ -201,7 +201,7 @@ export class Stage {
       this.machineAside = withAside.it;
       this.compiledAside = withAside.compiled;
       this.indexAside = reindex(this.indexAside, this.compiledAside);
-      this.standingAside = new StandingIndex(this.compiledAside);
+      this.standingAside = restand(this.standingAside, this.compiledAside);
     } else {
       this.machineAside = null;
       this.compiledAside = null;

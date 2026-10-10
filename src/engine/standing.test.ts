@@ -318,6 +318,7 @@ describe("一帧的价钱：道具表一次也不许走", () => {
   function watchProps(c: Compiled) {
     let cells = 0;
     let sweeps = 0;
+    let penned = 0;
     const scans = new Set<string | symbol>(["values", "forEach", "entries", "keys", Symbol.iterator]);
     const inner = new Map<string, Prop>();
     for (const [id, p] of c.props) {
@@ -345,12 +346,21 @@ describe("一帧的价钱：道具表一次也不许走", () => {
         return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(t) : v;
       },
     });
+    // 流水那一头也得数着：续排的价钱现在落在它身上，"新建一本读一遍、落一笔只读新接的那一截"
+    // 这两句得有一处能证明。逐格数，和方法调用（`push`）不混。
+    const touched = new Proxy(c.touched, {
+      get(t, k) {
+        if (typeof k === "string" && /^\d+$/.test(k)) penned++;
+        return k === "length" ? t.length : (t as unknown as Record<string | symbol, unknown>)[k];
+      },
+    }) as unknown as Compiled["touched"];
     return {
-      compiled: { ...c, props } as unknown as Compiled,
+      compiled: { ...c, props, touched } as unknown as Compiled,
       take: () => {
-        const out = { cells, sweeps };
+        const out = { cells, sweeps, penned };
         cells = 0;
         sweeps = 0;
+        penned = 0;
         return out;
       },
     };
@@ -421,14 +431,20 @@ describe("一帧的价钱：道具表一次也不许走", () => {
     expect(spent.sweeps).toBe(0);
   });
 
-  it("建索引付一次线性的价钱，之后随便问多少刻都不再按表走", () => {
+  it("新建一本走的已经是流水，道具表一次也不许走", () => {
     const c = compile(long(1500));
     const watched = watchProps(c);
     const ix = new StandingIndex(watched.compiled);
     const built = watched.take();
-    // 建一次是 O(带子)：每个道具走一次、每格外观点一次，这是它该付的。
-    expect(built.sweeps).toBe(1);
-    expect(built.cells).toBeGreaterThanOrEqual(c.props.size);
+    // 建一次仍然是 O(带子)，但那一笔付在**流水**上而不是道具表上：每一笔记下的落成、收笔、换格，
+    // 索引顺着它读，不必回头去整张道具表里找"哪一格被身后的刀改过"。上一件钉 cue 表用的是同一句话。
+    expect(built.sweeps).toBe(0);
+    expect(built.cells).toBe(0);
+    // 而流水那一头它一条读了两遍（一条 `lay` 看落成与收笔）—— 线性的那一笔确实在这里付掉了，
+    // 上面那两个零不是"什么都没读"。
+    expect(built.penned).toBeGreaterThanOrEqual(c.touched.length);
+    // 探针不许在空转：这一刻观众确实看得见东西。
+    expect(ix.visible(c.duration, null).length).toBeGreaterThan(0);
     for (let t = 0; t <= c.duration; t += Math.max(1, Math.floor(c.duration / 300))) {
       ix.visible(t, null);
       ix.laidIn(0, 1000, t);
