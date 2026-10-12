@@ -72,15 +72,14 @@ describe("view：时钟的每一帧不许重排整卷", () => {
     // 每一段在 render 里都要问一次"这一拍能剪回去吗"，所以调用次数就是重画的段数。
     const canReroll = vi.fn(() => false);
     const teacher = fakeTeacher(canReroll);
-    const dur = stage.compiled.duration;
     const beat = stage.compiled.beats[10];
-    const { host, rerender, done } = rail({ stage, teacher, t: beat.start + 10, duration: dur });
+    const { host, rerender, done } = rail({ stage, teacher, t: beat.start + 10 });
     expect(host.querySelectorAll(".seg").length).toBe(400);
     expect(canReroll).toHaveBeenCalled();
 
     canReroll.mockClear();
-    rerender({ stage, teacher, t: beat.start + 10, duration: dur });
-    rerender({ stage, teacher, t: beat.start + 40, duration: dur });
+    rerender({ stage, teacher, t: beat.start + 10 });
+    rerender({ stage, teacher, t: beat.start + 40 });
     expect(canReroll).not.toHaveBeenCalled();
     expect(host.querySelectorAll(".seg.now").length).toBe(1);
     done();
@@ -91,12 +90,11 @@ describe("view：时钟的每一帧不许重排整卷", () => {
     const stage = show(400);
     const canReroll = vi.fn(() => false);
     const teacher = fakeTeacher(canReroll);
-    const dur = stage.compiled.duration;
     const b0 = stage.compiled.beats[9];
     const b1 = stage.compiled.beats[10];
-    const { host, rerender, done } = rail({ stage, teacher, t: b0.start + 10, duration: dur });
+    const { host, rerender, done } = rail({ stage, teacher, t: b0.start + 10 });
     canReroll.mockClear();
-    rerender({ stage, teacher, t: b1.start + 10, duration: dur });
+    rerender({ stage, teacher, t: b1.start + 10 });
     // 亮的段换了一个：丢 now 的那段加拿 now 的那段。
     expect(canReroll.mock.calls.length).toBeLessThanOrEqual(2);
     expect(host.querySelectorAll(".seg.now").length).toBe(1);
@@ -108,15 +106,15 @@ describe("view：时钟的每一帧不许重排整卷", () => {
     const stage = show(3);
     const dur = stage.compiled.duration;
     const beats = stage.compiled.beats;
-    const { host, rerender, done } = rail({ stage, teacher: null, t: beats[0].start + 1, duration: dur });
+    const { host, rerender, done } = rail({ stage, teacher: null, t: beats[0].start + 1 });
     const lit = () => host.querySelector(".seg.now em")?.textContent;
     expect(lit()).toBe("1");
-    rerender({ stage, teacher: null, t: beats[1].start + 1, duration: dur });
+    rerender({ stage, teacher: null, t: beats[1].start + 1 });
     expect(lit()).toBe("2");
-    rerender({ stage, teacher: null, t: beats[2].start + 1, duration: dur });
+    rerender({ stage, teacher: null, t: beats[2].start + 1 });
     expect(lit()).toBe("3");
     // 时钟走到带子外面：没有哪一段该亮着。
-    rerender({ stage, teacher: null, t: dur + 5000, duration: dur });
+    rerender({ stage, teacher: null, t: dur + 5000 });
     expect(host.querySelectorAll(".seg.now").length).toBe(0);
     done();
     host.remove();
@@ -133,6 +131,7 @@ describe("view：时钟的每一帧不许重排整卷", () => {
     // 一次没被 act 收住的更新会在断言之后才落地，那就什么都测不到了。
     act(() => stage.load(Array.from({ length: 2000 }, (_, i) => line(i, 60_000))));
     expect(host.querySelectorAll(".log .row").length).toBe(2000);
+    const dur = stage.compiled.duration;
 
     /*
      * 这一条原来钉的是 `log.all()` 的调用次数 —— 那一头每一批抄一遍整卷，抄卷子就是它的指纹。
@@ -140,7 +139,6 @@ describe("view：时钟的每一帧不许重排整卷", () => {
      * 按仓库的规矩改它并记下这句话。新的指纹是"这一层做了几行"（`ui/rows.tsx` 的门口计数器），
      * 它比旧的更强：旧的那一头只要不抄卷子就绿，哪怕把已排好的那两千行重排一遍也看不见。
      */
-    const dur = stage.compiled.duration;
     for (const t of [dur * 0.2, dur * 0.4, dur * 0.6]) {
       const before = rowsMeter.described;
       act(() => stage.seek(t));

@@ -365,7 +365,7 @@ export default function App() {
 
         <div className="console" ref={dockRef}>
           <div className="console-inner">
-            {railOpen && <BeatRail stage={stage} teacher={teacherRef.current} t={snap.t} duration={snap.duration} />}
+            {railOpen && <BeatRail stage={stage} teacher={teacherRef.current} t={snap.t} />}
             <div className="composer">
               <input
                 value={entry}
