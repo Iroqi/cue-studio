@@ -473,7 +473,7 @@ npm run dev            # http://localhost:5173
 
 **排练模式（不花一个 token）**：只在 `npm run dev` 下出现——配置抽屉顶部会多一个"本地排练模式（不联网，用固定谱子驱动同一套舞台）"的勾，勾上即走 pi-ai 的 faux provider（进程内 yield 一份固定谱子：向量加法 / 力的分解）。生产构建里这个勾根本不渲染，`DEFAULT_CONFIG.scripted = false`。引擎语义、运镜、转场、gate、打断回卷、录像重放都在这一层验。
 
-**接真模型**：打开配置抽屉的"模型接入"，加一个 provider。支持两种形状：`openai-completions`（OpenAI 兼容 `/chat/completions`）和 `anthropic-messages`。密钥存在 `localStorage`（`canvas-teacher.credential.<id>`），配置行为 `canvas-teacher.llm`。
+**接真模型**：打开配置抽屉的"模型接入"，加一个 provider。支持两种形状：`openai-completions`（OpenAI 兼容 `/chat/completions`）和 `anthropic-messages`。密钥存在 `localStorage`（`canvas-teacher.credential.<id>`），配置行为 `canvas-teacher.llm`。「拉取模型列表」读的是提供商的 `/models` —— 中转站不答这一问（或答的形状不认识）不是死路：点「+ 手填一个模型」直接写模型 id 与显示名（label），手写的行与探测器产出的是同一个 `ModelCfg`，之后的拉取也保留它。
 
 纯浏览器直连、无后端网关、无账号 —— 所以 key 在 DevTools 里可见。这是 grilling 阶段定下并**已接受**的架构代价，不是 bug。
 

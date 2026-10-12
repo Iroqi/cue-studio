@@ -57,18 +57,29 @@ export function ModelConfig({ cfg, onChange, onEvent }: Props) {
     setBusy(p.id);
     try {
       const ids = await listRemoteModels(p);
-      if (ids.length === 0) onEvent(`${p.name}：接口没有返回模型列表，请手动填写 id`);
+      if (ids.length === 0) onEvent(`${p.name}：接口没有返回模型列表，点「+ 手填一个模型」自己写`);
       else onEvent(`${p.name}：拉到 ${ids.length} 个模型`);
       const known = new Map(p.models.map((m) => [m.id, m]));
       patchProvider(p.id, {
         models: [...ids.map((id) => known.get(id) ?? { id, reasoning: true, contextWindow: 128000, maxTokens: 8192 }), ...p.models.filter((m) => !ids.includes(m.id))],
       });
     } catch (e) {
-      onEvent(`拉取模型失败：${(e as Error).message}（跨域或被服务商拒绝，可改为手填 id）`);
+      onEvent(`拉取模型失败：${(e as Error).message}（跨域或被服务商拒绝，点「+ 手填一个模型」自己写）`);
     } finally {
       setBusy("");
     }
   };
+
+  /**
+   * The remote can be a 中转站 that answers no `/models`, or one that answers it behind a shape this
+   * detector does not know. Detection is a convenience, not the only door: a hand-written row is the
+   * same `ModelCfg` the detector would have produced, and a later pull never drops it
+   * (`pull` keeps rows whose id the remote did not list).
+   */
+  const addModel = (p: ProviderCfg) =>
+    patchProvider(p.id, {
+      models: [...p.models, { id: "model-id", label: "", reasoning: true, contextWindow: 128000, maxTokens: 8192 }],
+    });
 
   const saveKey = async (p: ProviderCfg, key: string) => {
     if ((keys[p.id] ?? "") === key) return; // a blur that changed nothing must not rewrite anything
@@ -188,13 +199,25 @@ export function ModelConfig({ cfg, onChange, onEvent }: Props) {
               <button onClick={() => void pull(p)} disabled={busy === p.id}>
                 {busy === p.id ? "拉取中…" : "拉取模型列表"}
               </button>
+              <button onClick={() => addModel(p)} title="接口检测不出模型时，直接写模型 id 和显示名">
+                + 手填一个模型
+              </button>
               <span className="count">{p.models.length} 个模型</span>
             </div>
             <details>
-              <summary>模型清单（context / max tokens / 是否支持推理）</summary>
+              <summary>模型清单（显示名 / id / context / max tokens / 是否支持推理）</summary>
               {p.models.map((m, i) => (
                 <div className="model-row" key={m.id}>
-                  <input value={m.id} onChange={(e) => patchProvider(p.id, { models: p.models.map((x, j) => (i === j ? { ...x, id: e.target.value } : x)) })} />
+                  <input
+                    placeholder="显示名（可选）"
+                    value={m.label ?? ""}
+                    onChange={(e) => patchProvider(p.id, { models: p.models.map((x, j) => (i === j ? { ...x, label: e.target.value } : x)) })}
+                  />
+                  <input
+                    placeholder="模型 id"
+                    value={m.id}
+                    onChange={(e) => patchProvider(p.id, { models: p.models.map((x, j) => (i === j ? { ...x, id: e.target.value } : x)) })}
+                  />
                   <input
                     className="cw"
                     type="number"

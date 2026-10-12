@@ -886,7 +886,7 @@ button.x.confirm {
 
 .model-row {
   display: grid;
-  grid-template-columns: 1fr 74px 66px auto auto;
+  grid-template-columns: 1fr 1fr 74px 66px auto auto;
   gap: 5px;
   align-items: center;
   margin: 4px 0;
