@@ -1,13 +1,19 @@
-import { memo } from "react";
+import { memo, useCallback, useSyncExternalStore } from "react";
 import type { Beat } from "../engine/types";
-import type { SegPrint, SegView } from "./segs";
+import type { SegPrint, SegView, NowStore } from "./segs";
 
 export interface SegProps extends SegView {
   /** 只许被**点下去的那一刻**读（`seek(b.start)`、`onArm(b, i)`），不许印 —— 印的是 `p`。 */
   b: Beat;
   i: number;
   p: SegPrint;
-  now: boolean;
+  /**
+   * 亮哪一拍的那台机器：这一段只问 `此刻是不是我`。F 的机关 —— 从前 `now` 是一个布尔 prop，换亮就得
+   * 换个新元素、重交那一份数组（O(带子)）；现在数组跨拍不换引用，只这两段自己醒过来翻这一格。
+   * `getServerSnapshot` 与 `getSnapshot` 同一个闭包（`=== i` 是纯函数，服务器与客户端答的一样），所以
+   * `useSyncExternalStore` 第二、三参都给它。
+   */
+  store: NowStore;
   armed: boolean;
 }
 
@@ -23,7 +29,9 @@ export interface SegProps extends SegView {
  * 住在单独一个文件里是仓库那条 lint 规矩（`react/only-export-components`）要的：`segs.tsx` 是那本
  * 账，账里不许夹组件，否则 fast refresh 在这一头整棵失效。
  */
-export const Seg = memo(function Seg({ stage, teacher, onArm, b, i, p, now, armed }: SegProps) {
+export const Seg = memo(function Seg({ stage, teacher, onArm, b, i, p, store, armed }: SegProps) {
+  const snap = useCallback(() => store.get() === i, [store, i]);
+  const now = useSyncExternalStore(store.subscribe, snap, snap);
   const rolled = !!teacher?.canReroll(p.turn);
   return (
     <div

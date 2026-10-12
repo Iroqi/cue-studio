@@ -69,6 +69,34 @@ function rail(props: RailProps) {
 }
 
 describe("view：时钟的每一帧不许重排整卷", () => {
+  // 这一条排第一，是刻意的：`console.error` 那条 "Cannot update a component while rendering a different
+  // component" React 按**组件名去重**、模块级只警一次。若前面已经挂了别的 `BeatRail`，去重旗子早被拨下，
+  // 到这一条就什么都抓不到。所以这一条必须是本文件里**第一个**挂 `BeatRail` 的，spy 也得从挂载那一次就架上。
+  it("节拍条：亮哪一格必须在提交之后推，不许在 render 里唤醒别的组件（F）", () => {
+    /*
+     * F 把 `now` 从段元素搬到那台 `store`，于是"亮灭"这件事由段自己订阅、由 `BeatRail` 推开。推开必须落在
+     * **提交之后**的 layout effect：探针实测把 `store.set(now)` 搬回 render 里，React 就喷
+     * "Cannot update a component (`Seg`) while rendering a different component (`BeatRail`)" —— 一个改了
+     * 行为（唤醒时机）却没有一把尺子的错法，和 D 的 `M19`、E 的 `N2b` 同一句话，所以钉这一条。断言的是从挂载
+     * 到跨拍这几趟 render 里 console.error 一次都不许带那句（真 F 代码恒不警；变异把推送搬回 render 当场红）。
+     */
+    const stage = show(4);
+    const beats = stage.compiled.beats;
+    const errs: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...a) => {
+      errs.push(a.map(String).join(" "));
+    });
+    // 挂载 + 两次跨拍：spy 从第一趟就在，覆盖"本文件第一次挂 BeatRail"那一刻
+    const { host, rerender, done } = rail({ stage, teacher: null, t: beats[0].start + 1 });
+    rerender({ stage, teacher: null, t: beats[2].start + 1 });
+    rerender({ stage, teacher: null, t: beats[3].start + 1 });
+    const warned = errs.some((e) => e.includes("Cannot update a component"));
+    spy.mockRestore();
+    expect(warned).toBe(false);
+    done();
+    host.remove();
+  });
+
   it("节拍条：没有跨过一拍的那一帧，一段都不许重画", () => {
     const stage = show(400);
     // 每一段在 render 里都要问一次"这一拍能剪回去吗"，所以调用次数就是重画的段数。

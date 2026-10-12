@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MAIN_TRACK } from "../engine/log";
 import { Stage } from "../engine/runtime";
 import { BeatRail } from "./BeatRail";
-import { railMeter, segsFor, type SegView } from "./segs";
+import { railMeter, segsFor, nowStore, type SegView } from "./segs";
 import type { Compiled, Op } from "../engine/types";
 
 /*
@@ -33,12 +33,18 @@ function legacySegs(compiled: Compiled): string[] {
   return compiled.beats.map((b) => `max(46px, ${(((b.end - b.start) / total) * 100).toFixed(2)}%)`);
 }
 
-/** 一段该印什么，参照自己算一遍（不复用 `segs.tsx` 里那一句）。 */
-function reference(compiled: Compiled, now = -1, armedSeq?: number) {
+/**
+ * 一段该印什么，参照自己算一遍（不复用 `segs.tsx` 里那一句）。
+ *
+ * F 之后 `now` **不进元素**，所以参照里也不比它：`now` 参数留着只因为调用方仍按"此刻亮第几格"喂给它，
+ * 而这一件要钉的是"亮那一格"这件事**换了 store、不换数组**，由那条 store 测试单独钉。这里 `cls` 不带
+ * ` now` —— 元素本来就再也不会带它。
+ */
+function reference(compiled: Compiled, _now = -1, armedSeq?: number) {
   return compiled.beats.map((b, i) => ({
     key: String(b.seqs[0]),
     no: String(i + 1),
-    cls: "seg" + (i === now ? " now" : "") + (b.gate ? " ask" : "") + (armedSeq === b.seqs[0] ? " armed" : ""),
+    cls: "seg" + (b.gate ? " ask" : "") + (armedSeq === b.seqs[0] ? " armed" : ""),
     grow: Math.max(1, Math.round(b.end - b.start)),
     headline: b.headline || "（无声调度）",
     title: `第 ${i + 1} 拍 · ${Math.round(b.start)}–${Math.round(b.end)}ms · 出自第 ${b.turn} 次调度 · ${b.verbs.join(" ")}`,
@@ -49,12 +55,12 @@ function reference(compiled: Compiled, now = -1, armedSeq?: number) {
  * 一段元素的"要印什么"。
  *
  * `Seg` 是 `memo` 过的**组件**，所以元素里没有 `children` 可读 —— 印出来的那几样就在 `props.p` 里，
- * 而 `props` 恰好是 React 逐格浅比对的东西：钉住它就同时钉住了"这一段印什么"和"这一段会不会被驳回去"。
- * DOM 那一头另有一段（`护栏：真在 DOM 上`）拿真画面复核对不对。
+ * 而 `props` 恰好是 React 逐格浅比对的东西。F 之后 `now` **不在元素里**（它归那台 `store`，每段自己订阅
+ * `store.get() === i`），所以这里只比"印出来的那几样"与"点住没有"，不比亮不亮 —— 亮不亮由 `store` 单独
+ * 钉（见那条"只换亮不许重新交那一份"），DOM 那一头另有一段（`护栏：真在 DOM 上`）拿真画面复核对不对。
  */
 type SegProps = {
   i: number;
-  now: boolean;
   armed: boolean;
   p: { title: string; headline: string; ask: boolean; grow: number; turn: number };
 };
@@ -64,7 +70,7 @@ function segOf(el: React.ReactElement) {
   return {
     key: String(el.key),
     no: String(q.i + 1),
-    cls: "seg" + (q.now ? " now" : "") + (q.p.ask ? " ask" : "") + (q.armed ? " armed" : ""),
+    cls: "seg" + (q.p.ask ? " ask" : "") + (q.armed ? " armed" : ""),
     grow: q.p.grow,
     headline: q.p.headline,
     title: q.p.title,
@@ -190,7 +196,16 @@ class Harness {
   }
 
   segs(now = -1, armedSeq?: number) {
-    return segsFor(this.stage.compiled, this.view, now, armedSeq);
+    const rows = segsFor(this.stage.compiled, this.view, now, armedSeq);
+    // 与 `BeatRail` 同一句读法：`segsFor` 只在整条重建时用 `now` 播种那台机器，续排那一头 `now` 由组件在
+    // layout effect 里推。测试挂的是门、不是真组件，所以这里手动补那一推，门这一头才拿得到"此刻亮第几格"。
+    nowStore(this.stage.compiled).set(now);
+    return rows;
+  }
+
+  /** 此刻那台机器答的是第几格（F 之后亮不亮只在它身上，不在元素里）。 */
+  litNow() {
+    return nowStore(this.stage.compiled).get();
   }
 
   /** 同一台机器、同一张拍表，只问一次"换了吗"，夹出这次要的段数。 */
@@ -222,10 +237,50 @@ describe("segs：已经排好的那一段不许跨一帧再排一遍", () => {
     const beats = h.compiled.beats;
     const mid = Math.floor(beats.length / 2);
     sameSegs(h.segs(mid), reference(h.compiled, mid));
+    // F 之后亮不亮只在 store 上：门喂进来的那个 `now` 必须能在机器上问回来，元素里再没有 ` now`。
+    expect(h.litNow()).toBe(mid);
     sameSegs(h.segs(mid, beats[mid + 1].seqs[0]), reference(h.compiled, mid, beats[mid + 1].seqs[0]));
     sameSegs(h.segs(-1, beats[0].seqs[0]), reference(h.compiled, -1, beats[0].seqs[0]));
+    expect(h.litNow()).toBe(-1);
     // 时钟落到最后一拍之外：没有哪一格该亮，可整条一段不许少
     sameSegs(h.segs(beats.length), reference(h.compiled, beats.length));
+    expect(h.litNow()).toBe(beats.length);
+  });
+
+  it("价钱：只换亮那一格，那一份一个字都不许多交（F 消掉的那一笔）", () => {
+    /*
+     * 这是 F 的价钱层，钉的是它真正消掉的东西：从前跨一拍 `take()` 见 `published=null` 就把整条拍表
+     * 重新 slice 一遍（`railPublished` 加整条长度）+ `light` relay 那两格（`railSegs` 加 2）。F 把
+     * `now` 从元素里搬到 store 之后，续排那一头 `now` 一个字不进这本账：亮不亮换了、带子没换、段没换、
+     * 那一份引用也不换。探针实测这一格从 64000@2000 帧缩到 0。
+     */
+    const h = new Harness();
+    for (const b of tape(11, 5, 5)) h.lay(b);
+    const beats = h.compiled.beats;
+    const before = h.segs(0); // 先亮第 0 格，把那一份交出去
+    const at = railMeter.published;
+    const segsAt = railMeter.segs;
+    // 一路把亮往后面挪，带子一个字不动：每一问都不许重新交那一份、不许多做一段
+    for (let i = 1; i < Math.min(beats.length, 50); i += 1) {
+      expect(h.segs(i)).toBe(before); // 还是同一个引用
+      expect(h.litNow()).toBe(i); // 机器答得上此刻亮哪一格
+    }
+    expect(railMeter.published - at).toBe(0);
+    expect(railMeter.segs - segsAt).toBe(0);
+  });
+
+  it("护栏：回头改那一格、点住那一格仍要换引用（诚实价，不许冻在旧画面）", () => {
+    // F 只把"亮"这一格搬走；段本身印的东西变了（回头改宽度/台词/问字）或被点住，仍得重新交那一份。
+    const h = new Harness();
+    h.lay([{ kind: "narrate", text: "第一句", duration: 1000 }]);
+    const first = h.segs();
+    const at = railMeter.published;
+    // 点住一格（armed 进元素）：那一份必须重新交，否则 React 整棵当没变、重排bar 那一格永远点不住
+    const armedSeq = h.compiled.beats[0].seqs[0];
+    expect(h.segs(0, armedSeq)).not.toBe(first);
+    expect(railMeter.published - at).toBeGreaterThan(0);
+    // 放开点住：那一份也重新交回
+    expect(h.segs(0)).not.toBe(first);
   });
 
   it("护栏：回头改的那一格，改的是**印出来的那些值**，不是只排了个新元素", () => {
@@ -544,14 +599,17 @@ describe("segs：已经排好的那一段不许跨一帧再排一遍", () => {
     host.remove();
   });
 
-  it("价钱：那一条横滚的容器自己 —— 不动的一帧不许进去，跨拍那一帧进去一次", () => {
+  it("价钱：那一条横滚的容器自己 —— 不动的一帧不许进去，跨拍那一帧也不进（F）", () => {
     /*
-     * `segs` 与 `canReroll` 两把尺子都量不到这一笔。容器不 memo 的时候：段元素一个也不会重做、
-     * `canReroll` 一次也不会响（React 拿着同一批元素引用在每一格上驳回去），可它仍然把那 n 格**走了一遍**
-     * —— 实测 4800 段一帧 0.03ms 对 0.16ms。所以这一问要容器自己门口那个数（`railMeter.boxed`）。
+     * `segs` 与 `canReroll` 两把尺子都量不到"容器进门走了一遍"这一笔。容器不 memo 时：段元素一个也不会
+     * 重做、`canReroll` 一次也不会响，可它仍然把那 n 格**走了一遍**（`railMeter.boxed`）。
      *
-     * 这里是**挂着的整棵树**，不是门：门那一头"不动的一帧交回同一个引用"由上面那条"同一卷带子反复问"
-     * 钉着，那一头看不见 React 走了几格。两把头各自有钉子，缺一个就会有一种错法静过去。
+     * 这条测试**改过**，按仓库的规矩记下为什么：D 那一头它钉的是"不动帧不进、跨拍进一次"（那时跨拍
+     * `take()` 见 `published=null` 把整条重新 slice，容器拿到新引用必进门）。F 把 `now` 从元素里搬到
+     * store，跨拍那一份引用一个字不换、容器 memo 直接驳回 —— 于是"跨拍进一次"这一半钉的**正是 F 消掉的
+     * 那一笔**，把它改成"跨拍也不进"。落一笔那一半是真脏（带子长了、那一份重新交），仍然进一次，不动。
+     * 这里是**挂着的整棵树**，不是门：门那一头"跨拍不换引用"由上面那条"只换亮那一格、那一份一个字都不许
+     * 多交"钉着，那一头看不见 React 走了几格；两把头各自有钉子，缺一个就会有一种错法静过去。
      */
     const h = new Harness();
     for (const b of tape(11, 5, 5)) h.lay(b);
@@ -577,14 +635,16 @@ describe("segs：已经排好的那一段不许跨一帧再排一遍", () => {
     expect(railMeter.published - pub).toBe(0);
     expect(canReroll).not.toHaveBeenCalled();
 
-    // 跨一拍：容器进一次（它那一格的 props 确实换了），段只做变了的那两段
+    // 跨一拍：F 之后那一份引用不换、容器一次不进，段也一段不做 —— 亮只在 store 上翻，DOM 跟得上
     const box2 = railMeter.boxed;
     const seg2 = railMeter.segs;
+    const pub2 = railMeter.published;
     act(() => root.render(createElement(BeatRail, { stage: h.stage, teacher, t: beats[2].start + 10 })));
-    expect(railMeter.boxed - box2).toBe(1);
-    expect(railMeter.segs - seg2).toBeLessThanOrEqual(2);
+    expect(railMeter.boxed - box2).toBe(0);
+    expect(railMeter.segs - seg2).toBe(0);
+    expect(railMeter.published - pub2).toBe(0);
     expect(host.querySelectorAll(".seg.now").length).toBe(1);
-    // 落一笔：容器同样进一次，段只做新落的那几拍加回头那一格
+    // 落一笔：容器进一次（那一份真的换了引用），段只做新落的那几拍加回头那一格
     const box3 = railMeter.boxed;
     const seg3 = railMeter.segs;
     const before = h.compiled.beats.length;

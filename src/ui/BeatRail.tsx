@@ -1,9 +1,9 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactElement, RefObject } from "react";
 import type { Stage } from "../engine/runtime";
 import type { Beat } from "../engine/types";
 import type { Teacher } from "../agent/loop";
-import { segsFor, countBoxed, type SegView } from "./segs";
+import { segsFor, nowStore, countBoxed, type SegView } from "./segs";
 
 interface Props {
   stage: Stage;
@@ -78,6 +78,13 @@ export function BeatRail({ stage, teacher, t }: Props) {
   // 这一双手每帧都是新对象，可 `holds` 比的是里面的三样：还是这台机器、这个导演、这个回调。
   const view: SegView = { stage, teacher, onArm };
   const segs = segsFor(stage.compiled, view, now, armed?.beat.seqs[0]);
+  // 那台机器与 `segsFor` 建的那本账同一台（同一条拍表 → WeakMap 查到同一个 store）。`now` 只往它身上推，
+  // 不进元素、不换数组。推进 `useLayoutEffect`（提交之后）而不是 render 里 —— 探针实测在 render 里 notify
+  // 会 "Cannot update a component (`Seg`) while rendering a different component (`BeatRail`)"。
+  const store = nowStore(stage.compiled);
+  useLayoutEffect(() => {
+    store.set(now);
+  }, [store, now]);
   if (beats.length === 0) return null;
 
   const roll = () => {

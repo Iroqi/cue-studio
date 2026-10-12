@@ -5,21 +5,54 @@ import type { Teacher } from "../agent/loop";
 import { Seg } from "./Seg";
 
 /**
+ * 亮哪一拍：一台**只答"此刻是第几拍"的小机器**，段自己订阅它。这是 F 的全部机关。
+ *
+ * 从前"亮不亮"编在段元素的 props 里，所以 `now` 一跨拍，那一段就得换个新元素、那一份数组就得重新交
+ * 一遍（`take()` slice 整条，O(带子)），容器也得进门把那 n 格走一遍（`boxed`）—— 可带子一个字没动，
+ * 变的只有"哪一格"。这一件把那一问从父手里搬到段自己手里：段订阅的是 `get() === i` 这一句**派生布尔**，
+ * 不是那个每帧换的 `now` 数字（订阅数字 → 全 n 段每帧都醒，比现在还差 n 倍 —— 探针跑完就删，实测就是
+ * 这个差别）。`useSyncExternalStore` 比快照用 `Object.is`，所以派生布尔翻没翻面就是醒不醒的依据：跨拍只
+ * 翻两段，数组引用不动、容器不进。
+ *
+ * 它和 `SegIndex` 同生命周期（存在那一本账里），而 `SegIndex` 挂在 `cached` 那条拍表的引用上（WeakMap
+ * 的键），所以换卷 → 新拍表 → 新机器 → 整条重排，和 `segsFor` 认引用是同一句话。`set` 只在**值真的换了**
+ * 时 notify 一次。
+ */
+export class NowStore {
+  private now = -1;
+  private readonly listeners = new Set<() => void>();
+  subscribe = (cb: () => void): (() => void) => {
+    this.listeners.add(cb);
+    return () => this.listeners.delete(cb);
+  };
+  get = (): number => this.now;
+  /** 值没换就一次都不 notify —— 不动的那一帧，一段都不许因为这句话而醒。 */
+  set(v: number): void {
+    if (v === this.now) return;
+    this.now = v;
+    for (const l of this.listeners) l();
+  }
+}
+
+/**
  * 这一层唯一的钱是**做段元素**：一段元素要把一拍折成"第几拍、什么时候、讲了什么、能不能剪回去"，
  * 还要折成"这一段有多宽"。所以价钱层数的就是它 —— `segEl` 门口加一，谁都绕不过去（段元素只能从这
  * 里出来）。
  *
- * `published` 是这一件**没有消掉**的那一笔，和 `rowsMeter.published` 同一句话：React 认的是那份子
- * 数组的引用，所以脏了一格就得重新交一份（抄的是指针，不是段）。它按交出去的长度计数，于是"没动的
- * 帧一次也不许多抄"和"动了的帧抄的就是拍表的长度"两句都钉得住。
+ * `published` 数的是**交出去那一份的长度**。React 认的是那份子数组的引用，所以换了一段就得重新交一份
+ * （抄的是指针，不是段）。F 把它从**跨拍那一帧**上摘下来了：亮不亮不再编进 props，跨拍时数组一个字没动、
+ * `take()` 交回同一个引用，那一帧一次也不许多抄。`published` 从此只在真的换了一段时付（落一批长尾巴、
+ * 点住与放开那一格、回头改那一格）—— 它仍跟着带子长（落一批那一次抄整条，是 C 实测钉过的诚实价），
+ * 只是从"每一跨拍都付"缩回"每一批才付"。
  *
- * 和 `rowsMeter` 同一句：不数毫秒。跨拍那一帧的钱有两半，各自有指纹：这里数**做了几段元素**，
- * `view.test.ts` 那边数**几段真的重新 render 了**（拿 `teacher.canReroll` 的调用次数）。
+ * 和 `rowsMeter` 同一句：不数毫秒。跨拍那一帧的钱有三样，各自有指纹：这里数**做了几段元素**与**重没重交
+ * 那一份**（`segs`、`published`），`view.test.ts` 那边数**几段真的重新 render 了**（`teacher.canReroll`
+ * 的调用次数）。F 之后跨拍那一帧这三格分别应当是 ≤2、0、≤2。
  *
  * `boxed` 是第三格，钉的是**另一件东西**：那一横滚的容器（`BeatRail` 里的 `Beats`）自己有没有被进去。
- * 容器不 memo 时，段元素一个也不会重做、`canReroll` 一次也不会响（React 拿到同一批元素引用就在每一格
- * 上驳回去），可它仍然把那 n 格**走了一遍** —— 实测 4800 段一帧 0.03ms 对 0.16ms。那一笔前两件尺子都
- * 量不到，所以容器自己门口加一个数：进了就是走了一遍。
+ * 容器不 memo 时，段元素一个也不会重做、`canReroll` 一次也不会响，可它仍然把那 n 格**走了一遍** ——
+ * 那一笔前两把尺子都量不到，所以容器门口加一个数。F 之前跨拍那一帧容器必进（数组换了引用，memo 驳不回），
+ * F 之后跨拍不换数组、容器不进，这一格从"跨拍 + 落笔都进"缩回"只有落笔进"。
  */
 export const railMeter = { segs: 0, published: 0, boxed: 0 };
 
@@ -78,9 +111,9 @@ function samePrint(a: SegPrint | undefined, b: SegPrint): boolean {
   return !!a && a.grow === b.grow && a.title === b.title && a.headline === b.headline && a.ask === b.ask && a.turn === b.turn;
 }
 
-function segEl(b: Beat, i: number, p: SegPrint, view: SegView, now: boolean, armed: boolean): ReactElement {
+function segEl(b: Beat, i: number, p: SegPrint, view: SegView, store: NowStore, armed: boolean): ReactElement {
   railMeter.segs += 1;
-  return <Seg key={b.seqs[0]} stage={view.stage} teacher={view.teacher} onArm={view.onArm} b={b} i={i} p={p} now={now} armed={armed} />;
+  return <Seg key={b.seqs[0]} stage={view.stage} teacher={view.teacher} onArm={view.onArm} b={b} i={i} p={p} store={store} armed={armed} />;
 }
 
 /**
@@ -91,13 +124,21 @@ function segEl(b: Beat, i: number, p: SegPrint, view: SegView, now: boolean, arm
  * （`WeakMap` 的键是它本身）：剪带、载入、清空是换带子 → 新的一台机器 → 新的拍表 → 整条重排，那是
  * 诚实的价钱。
  *
- * 这里比 `RowIndex` 多一样：脏的不止尾巴，还有**身上那一格** —— 亮着的那一段换人要重做两段，被点
- * 准备重排的那一段换人也要重做两段，上一批最后那一拍还会被身后那一批改宽。所以脏的是一格**集合**
- * 而不是一个游标，它的上限是常数（五格），与带子多长无关。
+ * 这一本账管三样脏，都是常数格：
+ *  - **尾巴**：新落的几拍，`grow` 逐格 `absorb`。
+ *  - **回头那一格**：上一批最后那一拍会被身后那一批改宽/补台词/挂卡（见 `grow` 头上那段），改的是
+ *    **印出来的值**，所以排一个新元素进去。
+ *  - **点住那一格**（`armed`）：用户按下 ⟲，重排bar 挂着，那一格换元素。同样是常数格。
+ *
+ * **亮不亮不在这里。** 从前 `now` 也走上面这条路（换亮就重做两格、重新交数组），F 把它从这一本账里搬走了：
+ * 每一段自己订阅那台 `store`（`get() === i`），`now` 一跨拍只唤醒翻面的那两段、数组一个字不动。所以
+ * `published` 从此**不因跨拍而换引用** —— 这是这一件要消的那笔 O(带子)（探针：`railPublished` 64000@2000 帧）。
  */
 export class SegIndex {
   private readonly beats: readonly Beat[];
   private readonly view: SegView;
+  /** 每一段订阅的那台机器：亮哪一格只在它身上，由 `BeatRail` 在 layout effect 里推进（不在 render 里 notify）。 */
+  readonly store: NowStore;
   private readonly els: ReactElement[] = [];
   /** 每一格**排出去时**印的那几样。宽度、卡、台词都会被身后那一批改，见 `grow` 头上那一段。 */
   private readonly prints: SegPrint[] = [];
@@ -109,8 +150,7 @@ export class SegIndex {
    * 整条的价钱，那一趟不算多付。
    */
   private readonly atBySeq = new Map<number, number>();
-  /** 亮着的那一格、被点住的那一格；`-1` 是"没有哪一格"。 */
-  private nowAt: number;
+  /** 被点住的那一格；`-1` 是"没有哪一格"。亮哪一格由 `store` 回答，不在这里。 */
   private armedAt: number;
   private at = 0;
   /** 和 `RowIndex.published` 是同一句话：没脏就不重新交那一份，否则 React 整棵当没变。 */
@@ -119,8 +159,10 @@ export class SegIndex {
   constructor(beats: readonly Beat[], view: SegView, now: number, armedSeq: number | undefined) {
     this.beats = beats;
     this.view = view;
-    // 先定这两格再排：整条重建时那几段一次就排对，不必先排成"不亮"再回头重做那一段。
-    this.nowAt = now;
+    // 整条重建时先给那台机器一个当前值：新落的那一段第一次 render 就要印对"此刻亮不亮"。构造这一刻还没有
+    // 段订阅它（元素尚未 render），`set` 那一句 notify 是空转 —— 不在 render 里唤醒别人的规矩在这一头天然成立。
+    this.store = new NowStore();
+    this.store.set(now);
     this.armedAt = armedSeq === undefined ? -1 : beats.findIndex((b) => b.seqs[0] === armedSeq);
     this.grow();
   }
@@ -157,50 +199,39 @@ export class SegIndex {
     const b = this.beats[i];
     const p = printSeg(b, i);
     this.prints[i] = p;
-    this.els[i] = segEl(b, i, p, this.view, this.nowAt === i, this.armedAt === i);
+    this.els[i] = segEl(b, i, p, this.view, this.store, this.armedAt === i);
     this.atBySeq.set(b.seqs[0], i);
     this.published = null;
   }
 
-  /** 重做**那一格**：它亮不亮、被点住没有，由现在的 `nowAt`/`armedAt` 答。 */
+  /** 重做**那一格**：它被点住没有，由现在的 `armedAt` 答（亮不亮不在元素里，归 `store`）。 */
   private relay(i: number): void {
     const b = this.beats[i];
     if (!b) return;
     const p = printSeg(b, i);
     this.prints[i] = p;
-    this.els[i] = segEl(b, i, p, this.view, this.nowAt === i, this.armedAt === i);
+    this.els[i] = segEl(b, i, p, this.view, this.store, this.armedAt === i);
     this.published = null;
   }
 
   /**
-   * 亮哪一格、点住哪一格：至多重做四格（旧亮、新亮、旧点、新点），与带子多长无关。
+   * 点住与放开那一格：至多重做两格（旧点、新点），与带子多长无关。
    *
-   * 旧写法把 `now` 当 prop 传下去，于是那 n 段每跨一拍全部现做，React 拿到 n 个新引用，每一段都要
-   * 重新比对（实测 4800 段一帧 29ms，拖进度条时每拖一下付一次）。
+   * `now` 那一半已经搬去 `store`，这里只剩 `armed` —— 它是用户动作（按 ⟲）、罕见，付一次换引用是诚实价。
+   * 越界那一格由 `relay` 那句 `if (!b) return` 自己退（`armedSeq` 指向被剪掉那一拍时那一格已不在账上）。
    */
-  light(now: number, armedSeq: number | undefined): void {
-    // 那一拍在第几格是查这张表，不是把整条走一遍：重排bar 挂着的时候这一句**每一帧**都跑，而格子
-    // 在 absorb 那一刻就已经定了 —— 走一遍整条就是把这一件要消掉的那笔价钱请回来。
+  arm(armedSeq: number | undefined): void {
+    // 那一拍在第几格是查这张表，不是把整条走一遍：这一句每一帧都跑，走整条就是把这件要消的价钱请回来。
     const armedAt = armedSeq === undefined ? -1 : (this.atBySeq.get(armedSeq) ?? -1);
-    if (now === this.nowAt && armedAt === this.armedAt) return;
+    if (armedAt === this.armedAt) return;
     const dirty = new Set<number>();
-    if (now !== this.nowAt) {
-      if (this.nowAt >= 0) dirty.add(this.nowAt);
-      if (now >= 0) dirty.add(now);
-      this.nowAt = now;
-    }
-    if (armedAt !== this.armedAt) {
-      // 摘掉旧那一格按**已经记下的格子**问：被点住的那一拍可能已经在这一批里被剪掉了，那一格不再
-      // 是这张表上的哪一格，可它上一次排出去的元素里仍然写着 `armed: true`。
-      if (this.armedAt >= 0) dirty.add(this.armedAt);
-      this.armedAt = armedAt;
-      if (armedAt >= 0) dirty.add(armedAt);
-    }
-    // 越界的那一格由 `relay` 自己退：`now` 是调用方给的答案（`BeatRail` 那头的二分），这一句不许炸。
+    if (this.armedAt >= 0) dirty.add(this.armedAt);
+    this.armedAt = armedAt;
+    if (armedAt >= 0) dirty.add(armedAt);
     for (const i of dirty) this.relay(i);
   }
 
-  /** 对外那一份：没脏就交同一个引用（时钟那一帧整棵跳过），脏了才重新抄那一份指针。 */
+  /** 对外那一份：没脏就交同一个引用（跨拍那一帧整棵跳过），脏了才重新抄那一份指针。 */
   take(): readonly ReactElement[] {
     if (!this.published) {
       this.published = this.els.slice();
@@ -213,20 +244,30 @@ export class SegIndex {
 const cached = new WeakMap<readonly Beat[], SegIndex>();
 
 /**
- * 门。与 `rowsFor` / `reindex` / `restand` 同形，只是这里还多问两句"亮哪一格、点住哪一格"。
- *
- * 那一双手每帧都是一个新的对象字面量，所以 `holds` 比的是里面那三样而不是它本身 —— 这本账认的是
- * "还是不是这台机器、这个导演、这个点击回调"，不是"还是不是那一帧"。
+ * 门。与 `rowsFor` / `reindex` / `restand` 同形，只是这里不再"换亮"—— `now` 不在这里进元素、也不再让
+ * `take()` 换引用；它只用来在**整条重建**那一刻给那台 `store` 一个初值。续排那一头 `now` 一个字不进这本账，
+ * 亮哪一格由 `BeatRail` 从 `nowStore` 拿到那台机器、在 `useLayoutEffect` 里 `set`（探针实测：在 render 里
+ * notify 会 "Cannot update a component while rendering a different component"，在 effect 里才干净）。
  */
 export function segsFor(compiled: Compiled, view: SegView, now: number, armedSeq: number | undefined): readonly ReactElement[] {
   const beats = compiled.beats;
   const held = cached.get(beats);
   if (held && held.holds(view)) {
     held.grow();
-    held.light(now, armedSeq);
+    held.arm(armedSeq);
     return held.take();
   }
   const fresh = new SegIndex(beats, view, now, armedSeq);
   cached.set(beats, fresh);
   return fresh.take();
+}
+
+/**
+ * 那一台 `store`：`BeatRail` 拿它、在 effect 里推 `now`。查的就是 `segsFor` 刚为这张拍表建的那本账 —— 同
+ * 引用同一条拍表，所以拿到的机器与元素里嵌的是同一台。
+ */
+export function nowStore(compiled: Compiled): NowStore {
+  const ix = cached.get(compiled.beats);
+  // `segsFor` 先跑（`BeatRail` render 里就是这次序），账一定在；退一步给一台空机器，只答"没哪一拍亮"。
+  return ix ? ix.store : new NowStore();
 }
