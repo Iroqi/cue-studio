@@ -7,6 +7,8 @@ import { MAIN_TRACK } from "./log";
 import { Stage } from "./runtime";
 import { BeatRail } from "../ui/BeatRail";
 import { rowsMeter } from "../ui/rows";
+import { LogRows } from "../ui/LogRows";
+import type { ReactElement } from "react";
 import App from "../App";
 import type { Op, OpEntry } from "./types";
 
@@ -149,6 +151,116 @@ describe("view：时钟的每一帧不许重排整卷", () => {
     act(() => stage.append([{ kind: "beat", duration: 500 }], MAIN_TRACK));
     expect(rowsMeter.described - grew).toBe(1);
     expect(host.querySelectorAll(".log .row").length).toBe(2001);
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  /*
+   * E 那一笔：`rowsMeter.described`/`published` 两把尺子都量不到"不动的那一帧走了几行"。裸容器每帧
+   * 是一个新元素，React 要把那 n 行 child 逐格走一遍才知道能不能跳过 —— 行元素引用一个也没换、一行也
+   * 没重做、那一份也没重抄，可这一帧仍然按 n 付费。这一笔节拍条那头已经用 memo 容器消掉（`Beats` +
+   * `railMeter.boxed`），日志这一头补上同一把尺子。这里挂的是整棵 App（那个每帧重渲染的订阅者），
+   * 不是门 —— 门那一头由 `rows.test.ts` 钉引用稳不稳，看不见 React 走了几格。
+   */
+  it("日志那一头：什么都不动的一帧，容器一次都不许进", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    act(() => root.render(createElement(App)));
+    const stage = (globalThis as { __stage?: Stage }).__stage!;
+    act(() => stage.load(Array.from({ length: 2000 }, (_, i) => line(i, 1000))));
+    expect(host.querySelectorAll(".log .row").length).toBe(2000);
+    // 站定在第 3 拍里，前后各 seek 一下：带子没长、拍没跨、lines 没动 —— 每一刀都是"什么都不动的那一帧"。
+    const box = rowsMeter.boxed;
+    const described = rowsMeter.described;
+    const published = rowsMeter.published;
+    for (let k = 0; k < 20; k += 1) act(() => stage.seek(3010 + (k % 2)));
+    // 容器一次都不许进（进了就是逐格走了 2000 行一遍）
+    expect(rowsMeter.boxed - box).toBe(0);
+    // 前两把尺子本来就看不见这一笔，留着断言钉住"不是靠它们免费"
+    expect(rowsMeter.described - described).toBe(0);
+    expect(rowsMeter.published - published).toBe(0);
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  it("日志那一头：短带与长带，不动那一帧进容器的次数一样（都是零）", () => {
+    // 参照那一头量得到东西：下面"落一批进一次"在两种长度下都得是同一个数，可那一头是脏帧不是空帧。
+    const walk = (n: number) => {
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const root = createRoot(host);
+      act(() => root.render(createElement(App)));
+      const stage = (globalThis as { __stage?: Stage }).__stage!;
+      act(() => stage.load(Array.from({ length: n }, (_, i) => line(i, 1000))));
+      const box = rowsMeter.boxed;
+      for (let k = 0; k < 30; k += 1) act(() => stage.seek(1010 + (k % 2)));
+      const clean = rowsMeter.boxed - box;
+      act(() => root.unmount());
+      host.remove();
+      return clean;
+    };
+    // 一百倍的带子，那一帧进容器一次都不许有：这一句才是"那一帧走几行不再跟着带子长"。
+    expect(walk(30)).toBe(0);
+    expect(walk(3000)).toBe(0);
+  });
+
+  it("日志那一头：容器 memo 过以后，新落的那一行仍然要进得了画面（不许冻住）", () => {
+    /*
+     * 这是 E 的护栏，也是最要紧的一句：把容器做成 memo 组件，若哪一天有人图省事把 `rows` 直接当那个
+     * div 的唯一 child（引用不换），memo 会把整棵子树浅比对掉，新落那一行永远进不去 DOM —— 正是 C 踩
+     * 过的那一次坑。所以这里在挂着的整棵 App 上核对 DOM 行数，而不是只问 `rowsFor` 交没交新引用。
+     */
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    act(() => root.render(createElement(App)));
+    const stage = (globalThis as { __stage?: Stage }).__stage!;
+    act(() => stage.load(Array.from({ length: 200 }, (_, i) => line(i, 1000))));
+    expect(host.querySelectorAll(".log .row").length).toBe(200);
+
+    // 落一批：容器进一次（那一份换了引用），那一行也必须落到画面上。
+    let box = rowsMeter.boxed;
+    act(() => stage.append([{ kind: "narrate", text: "又一句", duration: 1000 }], MAIN_TRACK));
+    expect(rowsMeter.boxed - box).toBe(1);
+    expect(host.querySelectorAll(".log .row").length).toBe(201);
+
+    // 带子换卷（剪带）：整卷重排，容器仍只进一次，画面对得上剪完的那一卷。
+    box = rowsMeter.boxed;
+    act(() => stage.rerollFrom(10));
+    expect(rowsMeter.boxed - box).toBe(1);
+    expect(host.querySelectorAll(".log .row").length).toBe(10);
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  it("日志那一头：导演开口（lines 换引用）容器要进，讲完再不动就不进", () => {
+    /*
+     * App 那头把 `lines` 挂上了，可它只在导演讲话时换引用，而这一份探针没有活导演 —— 那一半没有尺子量：
+     * 若 memo 的比对器只比 `rows` 忽略了 `lines`，App 那一头三问全绿（和 D 那一件 `M19` 同一句话：
+     * 一个改了行为、却没有一把尺子的错法会静过去）。所以这一问直接挂 `LogRows` 这一棵，逼着它换 `lines`。
+     */
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const rows = [] as ReactElement[];
+    const render = (lines: { beat: number; text: string }[]) => act(() => root.render(createElement(LogRows, { rows, lines })));
+    render([{ beat: 0, text: "第一句" }]);
+    expect(host.querySelectorAll(".director-text").length).toBe(1);
+
+    // 换一句新的（引用变了）：容器该进一次，画面跟上。
+    let box = rowsMeter.boxed;
+    render([{ beat: 0, text: "第一句" }, { beat: 1, text: "第二句" }]);
+    expect(rowsMeter.boxed - box).toBe(1);
+    expect(host.querySelectorAll(".director-text").length).toBe(2);
+
+    // 同一份 lines 再 render 一次：一个字没动，容器一次都不许进。
+    const same = [{ beat: 0, text: "第一句" }, { beat: 1, text: "第二句" }];
+    render(same);
+    box = rowsMeter.boxed;
+    render(same);
+    render(same);
+    expect(rowsMeter.boxed - box).toBe(0);
     act(() => root.unmount());
     host.remove();
   });

@@ -9,6 +9,7 @@ import { ModelConfig } from "./ui/ModelConfig";
 import { BeatRail } from "./ui/BeatRail";
 import { LearnerArchive } from "./ui/LearnerArchive";
 import { rowsFor } from "./ui/rows";
+import { LogRows } from "./ui/LogRows";
 import { getModels, loadConfig, saveConfig, setScriptedResponses, type LlmConfig } from "./llm/llm";
 import type { OpEntry } from "./engine/types";
 
@@ -416,19 +417,7 @@ export default function App() {
             {usage.calls} 次调用 · {usage.input + usage.output} tokens{usage.cost ? ` · $${usage.cost.toFixed(4)}` : ""}
             {cfg.scripted ? " · 排练模式" : ""}
           </div>
-          {tab === "log" ? (
-            <div className="panel log">
-              {logRows}
-              {lines
-                .filter((l) => l.text.trim().length > 0)
-                .map((l, i) => (
-                  <div className="director-text" key={`${l.beat}:${i}`}>
-                    <em>第 {l.beat} 拍</em>
-                    <span>{l.text}</span>
-                  </div>
-                ))}
-            </div>
-          ) : tab === "archive" ? (
+          {tab === "log" ? <LogRows rows={logRows} lines={lines} /> : tab === "archive" ? (
             <LearnerArchive />
           ) : (
             <ModelConfig cfg={cfg} onChange={setCfg} onEvent={setStatus} />

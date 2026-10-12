@@ -13,8 +13,22 @@ import type { Compiled, Gate, OpEntry } from "../engine/types";
  * 没能消掉的那一笔：React 认的是子数组的引用，所以长过尾巴之后那一份必须重新交 —— 见 `RowIndex`
  * 头上那段。它是**每批一次 O(带子) 的指针抄**，不是每批一次 O(带子) 的折句子，差着整整一个量级，
  * 可它确实是跟着带子长的，所以记在这里、钉在测试里，不许当成免费。
+ *
+ * 第三格 `boxed` 是 E 补的，钉的是**另一件东西**：那一整排行的容器（`LogRows`）自己有没有被进去。
+ * `App` 是唯一的 `useSyncExternalStore` 订阅者，时钟每一帧整棵重渲染；容器不 memo 时那 n 行的元素引用
+ * 一个也不会重做（`described` 一次不涨、`published` 一次不动），可 React 仍然把那 n 格**走了一遍**
+ * —— 这一笔前两把尺子都量不到，所以容器自己门口加一个数：进了就是走了一遍。与 `railMeter.boxed` 同形。
  */
-export const rowsMeter = { described: 0, published: 0 };
+export const rowsMeter = { described: 0, published: 0, boxed: 0 };
+
+/**
+ * 容器门口那一格。单独一个函数而不是让 `LogRows` 自己写 `rowsMeter.boxed += 1`：仓库那条 lint 规矩
+ * （`react/immutability`）不许在 render 里改模块外那个对象，而这一问要的恰恰是"render 里进没进"。
+ * 与 `segs.tsx` 的 `countBoxed` 是同一句；`described` 与 `published` 加在非组件的函数里没有这个问题。
+ */
+export function countLogBoxed(): void {
+  rowsMeter.boxed += 1;
+}
 
 /**
  * 一行文字。它读的只有自己那一笔的 `op` 字段，加上 `gates` 里那张卡的 `op.prompt`。
