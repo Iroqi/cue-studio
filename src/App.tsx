@@ -8,68 +8,9 @@ import { asideScore, continuationScore, paintScript, rehearsalScore } from "./ag
 import { ModelConfig } from "./ui/ModelConfig";
 import { BeatRail } from "./ui/BeatRail";
 import { LearnerArchive } from "./ui/LearnerArchive";
+import { rowsFor } from "./ui/rows";
 import { getModels, loadConfig, saveConfig, setScriptedResponses, type LlmConfig } from "./llm/llm";
-import type { Gate, OpEntry } from "./engine/types";
-
-function describe(e: OpEntry, gates: Map<number, Gate>): string {
-  const o = e.op as unknown as Record<string, unknown> & { kind: string };
-  const s = (k: string) => (typeof o[k] === "string" ? (o[k] as string) : "");
-  const n = (k: string) => (typeof o[k] === "number" ? Math.round(o[k] as number) : "");
-  const box = () => {
-    const b = o.box;
-    if (typeof b !== "object" || b === null) return "";
-    const { x = 0, y = 0, w = 0, h = 0 } = b as Record<string, number>;
-    return `@${Math.round(x)},${Math.round(y)} ${Math.round(w)}×${Math.round(h)}`;
-  };
-  switch (o.kind) {
-    case "build":
-      return `build ${s("id")} · ${s("label")}${box()} (${s("scene")})`;
-    case "patch":
-      return `draw ${s("id")}${o.svg ? ` ← ${String(o.svg).length} 字符图形` : ""}`;
-    case "recall":
-      return `recall ${s("id")} → ${s("scene")}`;
-    case "discard":
-      return `discard ${s("id")}`;
-    case "camera": {
-      const where = Array.isArray(o.target) ? (o.target as string[]).join("+") : s("follow");
-      const at = o.at as { x?: number; y?: number } | undefined;
-      const bits = [
-        `camera ${s("mode")}`,
-        where,
-        o.dir ? `→ ${s("dir")} ${typeof o.screens === "number" ? o.screens : 0.8} 屏` : "",
-        at ? `部位 ${at.x ?? 0},${at.y ?? 0}×${typeof o.span === "number" ? o.span : 0.35}` : "",
-        o.region ? "rect" : "",
-        `${n("duration")}ms`,
-      ];
-      return bits.filter(Boolean).join(" ");
-    }
-    case "narrate": {
-      const style = o.style === "verse" ? " ·verse" : o.style === "voice" ? " ·只出声" : "";
-      return `旁白 ${n("duration")}ms${style} 「${s("text")}」`;
-    }
-    case "transition":
-      return `换场 ${s("style")} → ${s("to")}`;
-    case "highlight":
-      return `highlight ${s("target")} ${s("style")}`;
-    case "motion":
-      return `motion ${s("mode")} ${s("id")} ${n("amp")}px/${n("period")}ms ×${n("duration")}ms`;
-    case "beat":
-      return `静默 ${n("duration")}ms`;
-    case "quiz":
-      return `提问：${s("prompt")}`;
-    case "answer": {
-      const settled = typeof o.gate === "number" ? gates.get(o.gate) : undefined;
-      const asked = settled?.op.kind === "quiz" ? settled.op.prompt : "";
-      return `他答：「${s("text")}」${asked ? ` —— ${asked.slice(0, 24)}` : ""}`;
-    }
-    case "pause-for":
-      return `等待：${s("reason")}`;
-    case "link":
-      return `link ${s("from")} ${s("relation")} ${s("to")}`;
-    default:
-      return o.kind;
-  }
-}
+import type { OpEntry } from "./engine/types";
 
 const RATES = [0.5, 1, 2, 4];
 
@@ -82,23 +23,15 @@ export default function App() {
   const snap = useSyncExternalStore(stage.subscribe, stage.getSnapshot);
   /*
    * 指令日志是这卷带子的函数，不是时钟的函数：一秒钟走六十帧，带子只在有人演出的时候动。
-   * 以前每一帧都把整卷重排一遍，抽屉关着也照排（"关"只是个 CSS transform）：两千行一帧 82ms、
-   * 两万行 689ms。所以这里记住的是**排好的那些行** —— 只记住每行的文字不够，那样每帧还在重做
-   * 两千个元素；元素本身是同一批对象，React 拿到同一个引用才肯逐棵子树跳过。量完：两千行 0.9ms、
-   * 两万行 2.0ms，剩下那点钱是按引用比对一遍数组，不是重排。
+   * 以前每一帧都把整卷重排一遍（抽屉关着也照排，"关"只是个 CSS transform），后来改成"每批把整卷重排
+   * 一遍、每帧不动"，剩下那一笔就是每一批付一次整卷的元素。现在那一笔也消掉了：`rowsFor` 认的是带子
+   * 本身与那张卡表的**引用**，落一笔只排新落的那几行（`ui/rows.tsx`）。
+   * 依赖留着 `compiled` 是因为"带子长没长"在引用上问不出来 —— 那份新记录是"该问了"的信号，价钱由
+   * 那本账决定。
    */
   const compiled = stage.compiled;
-  const logRows = useMemo(() => {
-    const bySeq = new Map(compiled.gates.map((g) => [g.seq, g]));
-    return stage.log
-      .all()
-      .map((e) => (
-        <div className={e.track === "main" ? "row" : "row aside"} key={e.seq}>
-          <em>{e.seq}</em>
-          <span>{describe(e, bySeq)}</span>
-        </div>
-      ));
-  }, [stage, compiled]);
+  const tape = stage.log.tape;
+  const logRows = useMemo(() => rowsFor(compiled, tape), [compiled, tape]);
   const narrator = useMemo(() => new Narrator(stage), [stage]);
   const [voiced, setVoiced] = useState(() => narrator.enabled);
   const [cfg, setCfg] = useState<LlmConfig>(() => loadConfig());

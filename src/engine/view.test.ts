@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MAIN_TRACK } from "./log";
 import { Stage } from "./runtime";
 import { BeatRail } from "../ui/BeatRail";
+import { rowsMeter } from "../ui/rows";
 import App from "../App";
 import type { Op, OpEntry } from "./types";
 
@@ -121,11 +122,11 @@ describe("view：时钟的每一帧不许重排整卷", () => {
     host.remove();
   });
 
-  it("日志面板：时钟走一帧不许再把整卷抄一遍", () => {
+  it("日志面板：时钟走一帧不许再把整卷排一遍", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
-    // App 把 stage 挂到 globalThis 上，正好用它推时钟；抄卷子的证据就是 all() 的调用次数。
+    // App 把 stage 挂到 globalThis 上，正好用它推时钟。
     act(() => root.render(createElement(App)));
     const stage = (globalThis as { __stage?: Stage }).__stage!;
     // 推时钟和推动带子都得在 act 里：这一节的证据就是"React 到底重排了几次"，
@@ -133,14 +134,23 @@ describe("view：时钟的每一帧不许重排整卷", () => {
     act(() => stage.load(Array.from({ length: 2000 }, (_, i) => line(i, 60_000))));
     expect(host.querySelectorAll(".log .row").length).toBe(2000);
 
-    const all = vi.spyOn(stage.log, "all");
+    /*
+     * 这一条原来钉的是 `log.all()` 的调用次数 —— 那一头每一批抄一遍整卷，抄卷子就是它的指纹。
+     * 这一件消掉的正是那一笔：渲染路径从此不再调用 `all()`，所以那条断言钉的**就是这一件去掉的东西**，
+     * 按仓库的规矩改它并记下这句话。新的指纹是"这一层做了几行"（`ui/rows.tsx` 的门口计数器），
+     * 它比旧的更强：旧的那一头只要不抄卷子就绿，哪怕把已排好的那两千行重排一遍也看不见。
+     */
     const dur = stage.compiled.duration;
-    for (const t of [dur * 0.2, dur * 0.4, dur * 0.6]) act(() => stage.seek(t));
-    expect(all).not.toHaveBeenCalled();
-    // 带子真动了就必须重排：这一行保证上面那一刀不是把面板冻住了。
+    for (const t of [dur * 0.2, dur * 0.4, dur * 0.6]) {
+      const before = rowsMeter.described;
+      act(() => stage.seek(t));
+      expect(rowsMeter.described - before).toBe(0);
+    }
+    // 带子真动了就必须排新落的那一行：这一行保证上面那一刀不是把面板冻住了。
+    const grew = rowsMeter.described;
     act(() => stage.append([{ kind: "beat", duration: 500 }], MAIN_TRACK));
-    expect(all).toHaveBeenCalled();
-    all.mockRestore();
+    expect(rowsMeter.described - grew).toBe(1);
+    expect(host.querySelectorAll(".log .row").length).toBe(2001);
     act(() => root.unmount());
     host.remove();
   });
