@@ -257,8 +257,8 @@ export class Stage {
     return this.track === MAIN_TRACK || !this.standingAside ? this.standingMain : this.standingAside;
   }
 
-  append(ops: Op[], track: TrackId = this.track): OpEntry[] {
-    const added = this.log.append(ops, track);
+  append(ops: Op[], track: TrackId = this.track, onNote?: (n: string) => void): OpEntry[] {
+    const added = this.log.append(ops, track, onNote);
     this.recompile();
     return added;
   }

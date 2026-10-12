@@ -57,13 +57,18 @@ export class OpLog {
    * measure — assumes finite numbers and short strings; that assumption is enforced here rather than
    * left to whichever caller happens to have validated its input.
    *
+   * `onNote` is the director's ear on the gate: when the director's own batch is being appended, the
+   * gate says what it corrected (`guardOp`'s notes), so the receipt can carry the account. Nothing
+   * else listens — a restored recording has no model to tell, and that is exactly the boundary the
+   * notes were built for. The notes never enter the tape: they are a by-product of this one append.
+   *
    * 一次调用 = 一批。解释器里唯一要往后看的落点（`here`）只许读到本批为止，见 `compile.ts` 的
    * `placementView`：观众已经看过的那一格，不许被后落的那一批改写。
    *
    * 落笔是**同一卷带子长了一截**：往那一轨自己的数组里 push，引用不变，所以解释器只演新落的那一批
    * （`compile.ts` 的 `perform`）。
    */
-  append(ops: Op[], track: TrackId): OpEntry[] {
+  append(ops: Op[], track: TrackId, onNote?: (n: string) => void): OpEntry[] {
     const batch = this.group++;
     let list = this.tracks.get(track);
     if (!list) {
@@ -71,7 +76,7 @@ export class OpLog {
       this.tracks.set(track, list);
     }
     const added = ops.map((op) => {
-      const entry: OpEntry = { seq: this.seq++, track, turn: this.turn, group: batch, op: guardOp(op) };
+      const entry: OpEntry = { seq: this.seq++, track, turn: this.turn, group: batch, op: guardOp(op, onNote) };
       this.entries.push(entry);
       list.push(entry);
       this.bySeq.set(entry.seq, entry);

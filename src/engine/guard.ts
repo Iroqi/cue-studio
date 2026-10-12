@@ -281,93 +281,252 @@ function choices(list: unknown, cap: number): string[] | null {
  * One op as the interpreter needs it to be. Fields a tape cannot carry are defaulted or dropped;
  * everything else survives untouched, because the tape is the record of what was staged. Idempotent
  * and identity-preserving: an op that came out of a director tool already satisfies this.
+ *
+ * `notes` is the director's side-channel. OpenAI's Intelligent UI compiler records diagnostics that
+ * never reach the model, and the model repeats the same invalid properties in later responses; the
+ * gate here used to be the same shape — it corrected silently and the receipt said "built X". So when
+ * a listener is provided, each correction says what it changed, in the director's language. The
+ * channel is read-only: an op guarded with a listener leaves the door exactly as it would without
+ * one, and it costs nothing when nobody is listening — restoring a stranger's tape has no model to
+ * tell. Only *real* corrections speak: a missing field that takes its design default (`mode` → fit,
+ * `label` → id) is the director not having given it, not the gate having changed it.
  */
-export function guardOp(op: Op): Op {
+export function guardOp(op: Op, notes?: (n: string) => void): Op {
+  /** A string that was given, then cut: names and lines have different ceilings, so the cap is passed in. */
+  const trunc = (field: string, given: unknown, out: string, cap: number, unit = "字") => {
+    if (notes && typeof given === "string" && out !== given) notes(`${op.kind}.${field} 超过 ${cap} ${unit}，截到 ${out.length} ${unit}`);
+  };
+  /** A number that was given, then clamped or defaulted. `unit` carries the measure so the receipt reads as one line. */
+  const numNote = (field: string, given: unknown, out: number, unit = "") => {
+    if (notes && given !== undefined && out !== given) notes(isNum(given) ? `${op.kind}.${field} 越界，夹回 ${out}${unit}` : `${op.kind}.${field} 不是可读数字，取默认 ${out}${unit}`);
+  };
+  /** A 3-D spec the model gave, and what the whitelist kept of it. */
+  const sceneNote = (field: string, given: unknown, out: Scene3DSpec | undefined) => {
+    if (notes && given !== undefined) {
+      if (out === undefined) notes(`${op.kind}.${field} 不是可读的图元表，已丢弃`);
+      else {
+        const s = given as Record<string, unknown>;
+        const inPrims = Array.isArray(s.prims) ? (s.prims as unknown[]).length : 0;
+        if (out.prims.length !== inPrims) notes(`${op.kind}.${field} 图元 ${inPrims} → ${out.prims.length}（不认的形状被丢，封顶 ${MAX_PRIMS}）`);
+        if (out.background === undefined && typeof s.background === "string") notes(`${op.kind}.${field} background 与板同色，被丢`);
+      }
+    }
+  };
+
   switch (op.kind) {
-    case "build":
+    case "build": {
+      const id = name(op.id);
+      const label = name(str(op.label, str(op.id)));
+      const box = geometry(op.box);
+      const scene = op.scene === undefined ? undefined : name(op.scene);
+      const note = op.note === undefined ? undefined : line(op.note);
+      const svg = text(op.svg);
+      const html = text(op.html);
+      const css = text(op.css);
+      const scene3d = op.scene3d === undefined ? undefined : guardScene3(op.scene3d);
+      trunc("id", op.id, id, MAX_NAME);
+      if (notes && typeof op.label === "string" && label !== op.label) notes(`build.label 超过 ${MAX_NAME} 字，截到 ${label.length} 字`);
+      if (notes && box !== op.box) notes("build.box 越界或不可读，已修回可读框");
+      trunc("scene", op.scene, scene ?? "", MAX_NAME);
+      trunc("note", op.note, note ?? "", MAX_TEXT);
+      if (notes && op.svg !== undefined && svg !== op.svg) notes(typeof op.svg === "string" && svg !== undefined ? `build.svg 超过 ${MAX_MARKUP} 字符，截到 ${svg.length} 字符` : "build.svg 不是字符串，已丢弃");
+      if (notes && op.html !== undefined && html !== op.html) notes(typeof op.html === "string" && html !== undefined ? `build.html 超过 ${MAX_MARKUP} 字符，截到 ${html.length} 字符` : "build.html 不是字符串，已丢弃");
+      if (notes && op.css !== undefined && css !== op.css) notes(typeof op.css === "string" && css !== undefined ? `build.css 超过 ${MAX_MARKUP} 字符，截到 ${css.length} 字符` : "build.css 不是字符串，已丢弃");
+      sceneNote("scene3d", op.scene3d, scene3d);
       return revise(op, {
-        id: name(op.id),
-        label: name(str(op.label, str(op.id))),
-        box: geometry(op.box),
-        ...(op.scene !== undefined ? { scene: name(op.scene) } : {}),
-        ...(op.note !== undefined ? { note: line(op.note) } : {}),
-        svg: text(op.svg),
-        html: text(op.html),
-        css: text(op.css),
-        scene3d: op.scene3d === undefined ? undefined : guardScene3(op.scene3d),
-      });
-    case "patch":
-      return revise(op, {
-        id: name(op.id),
-        ...(op.scene !== undefined ? { scene: name(op.scene) } : {}),
-        ...(op.box !== undefined ? { box: geometry(op.box) } : {}),
-        ...(op.label !== undefined ? { label: name(op.label) } : {}),
-        svg: text(op.svg),
-        html: text(op.html),
-        css: text(op.css),
-        scene3d: op.scene3d === undefined ? undefined : guardScene3(op.scene3d),
-      });
-    case "recall":
-      return revise(op, {
-        id: name(op.id),
-        // Left out, `recall` means "onto the board being stood on" — that is decided at compile time,
-        // so a missing name stays missing rather than becoming the empty string.
-        ...(op.scene !== undefined ? { scene: name(op.scene) } : {}),
-        box: geometry(op.box),
-      });
-    case "discard":
-      return revise(op, { id: name(op.id) });
-    case "link":
-      return revise(op, { from: name(op.from), to: name(op.to), relation: name(op.relation) });
-    case "camera": {
-      const target = names(op.target);
-      return revise(op, {
-        mode: oneOf(op.mode, CAMERA_MODES, "fit"),
-        duration: ms(op.duration, 900),
-        ...(target === null ? {} : { target: target as string[] | undefined }),
-        region: op.region === undefined ? undefined : geometry(op.region),
-        center: op.center === undefined ? undefined : point(op.center),
-        zoom: isNum(op.zoom) ? Math.min(Math.max(op.zoom, 0.01), 100) : undefined,
-        follow: typeof op.follow === "string" ? name(op.follow) : undefined,
-        screens: isNum(op.screens) ? Math.min(4, Math.max(0.1, op.screens)) : undefined,
-        at: op.at === undefined ? undefined : fraction(op.at),
-        span: isNum(op.span) ? Math.min(1, Math.max(0.05, op.span)) : undefined,
+        id,
+        label,
+        box,
+        ...(op.scene !== undefined ? { scene } : {}),
+        ...(op.note !== undefined ? { note } : {}),
+        svg,
+        html,
+        css,
+        scene3d,
       });
     }
-    case "narrate":
-      return revise(op, { text: line(op.text), duration: ms(op.duration, 2000) });
-    case "transition":
-      return revise(op, { to: name(op.to), duration: ms(op.duration, 1200) });
-    case "highlight":
-      return revise(op, { target: name(op.target), duration: ms(op.duration, 1500) });
-    case "motion":
+    case "patch": {
+      const id = name(op.id);
+      const scene = op.scene === undefined ? undefined : name(op.scene);
+      const box = op.box === undefined ? undefined : geometry(op.box);
+      const label = op.label === undefined ? undefined : name(op.label);
+      const svg = text(op.svg);
+      const html = text(op.html);
+      const css = text(op.css);
+      const scene3d = op.scene3d === undefined ? undefined : guardScene3(op.scene3d);
+      trunc("id", op.id, id, MAX_NAME);
+      trunc("scene", op.scene, scene ?? "", MAX_NAME);
+      if (notes && op.box !== undefined && box !== op.box) notes("patch.box 越界或不可读，已修回可读框");
+      trunc("label", op.label, label ?? "", MAX_NAME);
+      if (notes && op.svg !== undefined && svg !== op.svg) notes(typeof op.svg === "string" && svg !== undefined ? `patch.svg 超过 ${MAX_MARKUP} 字符，截到 ${svg.length} 字符` : "patch.svg 不是字符串，已丢弃");
+      if (notes && op.html !== undefined && html !== op.html) notes(typeof op.html === "string" && html !== undefined ? `patch.html 超过 ${MAX_MARKUP} 字符，截到 ${html.length} 字符` : "patch.html 不是字符串，已丢弃");
+      if (notes && op.css !== undefined && css !== op.css) notes(typeof op.css === "string" && css !== undefined ? `patch.css 超过 ${MAX_MARKUP} 字符，截到 ${css.length} 字符` : "patch.css 不是字符串，已丢弃");
+      sceneNote("scene3d", op.scene3d, scene3d);
       return revise(op, {
-        id: name(op.id),
-        mode: oneOf(op.mode, MOTION_MODES, "oscillate"),
-        axis: oneOf(op.axis, MOTION_AXES, "x"),
-        amp: offset(op.amp, 90),
-        period: Math.min(Math.max(ms(op.period, 1600), 60), MAX_MS),
-        radius: Math.max(offset(op.radius, 0), 0),
-        steps: Math.min(Math.max(Math.round(num(op.steps, 4)), 2), 64),
-        decay: Math.max(offset(op.decay, 700), 200),
-        duration: ms(op.duration, 3000),
+        id,
+        ...(op.scene !== undefined ? { scene } : {}),
+        ...(op.box !== undefined ? { box } : {}),
+        ...(op.label !== undefined ? { label } : {}),
+        svg,
+        html,
+        css,
+        scene3d,
       });
-    case "beat":
-      return revise(op, { duration: ms(op.duration, 600) });
+    }
+    case "recall": {
+      const id = name(op.id);
+      // Left out, `recall` means "onto the board being stood on" — that is decided at compile time,
+      // so a missing name stays missing rather than becoming the empty string.
+      const scene = op.scene === undefined ? undefined : name(op.scene);
+      const box = geometry(op.box);
+      trunc("id", op.id, id, MAX_NAME);
+      trunc("scene", op.scene, scene ?? "", MAX_NAME);
+      if (notes && box !== op.box) notes("recall.box 越界或不可读，已修回可读框");
+      return revise(op, {
+        id,
+        ...(op.scene !== undefined ? { scene } : {}),
+        box,
+      });
+    }
+    case "discard": {
+      const id = name(op.id);
+      trunc("id", op.id, id, MAX_NAME);
+      return revise(op, { id });
+    }
+    case "link": {
+      const from = name(op.from);
+      const to = name(op.to);
+      const relation = name(op.relation);
+      trunc("from", op.from, from, MAX_NAME);
+      trunc("to", op.to, to, MAX_NAME);
+      trunc("relation", op.relation, relation, MAX_NAME);
+      return revise(op, { from, to, relation });
+    }
+    case "camera": {
+      const target = names(op.target);
+      const mode = oneOf(op.mode, CAMERA_MODES, "fit");
+      const duration = ms(op.duration, 900);
+      const region = op.region === undefined ? undefined : geometry(op.region);
+      const center = op.center === undefined ? undefined : point(op.center);
+      const zoom = isNum(op.zoom) ? Math.min(Math.max(op.zoom, 0.01), 100) : undefined;
+      const follow = typeof op.follow === "string" ? name(op.follow) : undefined;
+      const screens = isNum(op.screens) ? Math.min(4, Math.max(0.1, op.screens)) : undefined;
+      const at = op.at === undefined ? undefined : fraction(op.at);
+      const span = isNum(op.span) ? Math.min(1, Math.max(0.05, op.span)) : undefined;
+      if (notes && typeof op.mode === "string" && mode !== op.mode) notes(`camera.mode=${op.mode} 不认，回退 ${mode}`);
+      numNote("duration", op.duration, duration, "ms");
+      if (notes && target !== null && target !== op.target && target !== undefined) {
+        if (typeof op.target === "string") notes(`camera.target 超过 ${MAX_NAME} 字，截到 ${target[0]?.length ?? 0} 字`);
+        else if (Array.isArray(op.target)) notes(op.target.length > MAX_TARGETS ? `camera.target 超过 ${MAX_TARGETS} 个，截到 ${target.length} 个` : "camera.target 含非法项，已截");
+        else if (op.target !== undefined) notes("camera.target 不是名字列表，已清空");
+      }
+      if (notes && op.region !== undefined && region !== op.region) notes("camera.region 越界或不可读，已修回可读框");
+      if (notes && op.center !== undefined && center !== op.center) notes(center === undefined ? "camera.center 不是可读的点，已丢弃" : "camera.center 越界，夹回界内");
+      if (notes && op.zoom !== undefined && zoom !== op.zoom) notes(isNum(op.zoom) ? `camera.zoom 越界，夹回 ${zoom}` : "camera.zoom 不是可读数字，已丢弃");
+      trunc("follow", op.follow, follow ?? "", MAX_NAME);
+      if (notes && op.screens !== undefined && screens !== op.screens) notes(isNum(op.screens) ? `camera.screens 越界，夹回 ${screens}` : "camera.screens 不是可读数字，已丢弃");
+      if (notes && op.at !== undefined && at !== op.at) notes(at === undefined ? "camera.at 不是可读的点，已丢弃" : "camera.at 越界，夹回 0..1");
+      if (notes && op.span !== undefined && span !== op.span) notes(isNum(op.span) ? `camera.span 越界，夹回 ${span}` : "camera.span 不是可读数字，已丢弃");
+      return revise(op, {
+        mode,
+        duration,
+        ...(target === null ? {} : { target: target as string[] | undefined }),
+        region,
+        center,
+        zoom,
+        follow,
+        screens,
+        at,
+        span,
+      });
+    }
+    case "narrate": {
+      const text = line(op.text);
+      const duration = ms(op.duration, 2000);
+      trunc("text", op.text, text, MAX_TEXT);
+      numNote("duration", op.duration, duration, "ms");
+      return revise(op, { text, duration });
+    }
+    case "transition": {
+      const to = name(op.to);
+      const duration = ms(op.duration, 1200);
+      trunc("to", op.to, to, MAX_NAME);
+      numNote("duration", op.duration, duration, "ms");
+      return revise(op, { to, duration });
+    }
+    case "highlight": {
+      const target = name(op.target);
+      const duration = ms(op.duration, 1500);
+      trunc("target", op.target, target, MAX_NAME);
+      numNote("duration", op.duration, duration, "ms");
+      return revise(op, { target, duration });
+    }
+    case "motion": {
+      const id = name(op.id);
+      const mode = oneOf(op.mode, MOTION_MODES, "oscillate");
+      const axis = oneOf(op.axis, MOTION_AXES, "x");
+      const amp = offset(op.amp, 90);
+      const period = Math.min(Math.max(ms(op.period, 1600), 60), MAX_MS);
+      const radius = Math.max(offset(op.radius, 0), 0);
+      const steps = Math.min(Math.max(Math.round(num(op.steps, 4)), 2), 64);
+      const decay = Math.max(offset(op.decay, 700), 200);
+      const duration = ms(op.duration, 3000);
+      trunc("id", op.id, id, MAX_NAME);
+      if (notes && typeof op.mode === "string" && mode !== op.mode) notes(`motion.mode=${op.mode} 不认，回退 ${mode}`);
+      if (notes && typeof op.axis === "string" && axis !== op.axis) notes(`motion.axis=${op.axis} 不认，回退 ${axis}`);
+      numNote("amp", op.amp, amp);
+      numNote("period", op.period, period, "ms");
+      numNote("radius", op.radius, radius);
+      numNote("steps", op.steps, steps);
+      numNote("decay", op.decay, decay);
+      numNote("duration", op.duration, duration, "ms");
+      return revise(op, {
+        id,
+        mode,
+        axis,
+        amp,
+        period,
+        radius,
+        steps,
+        decay,
+        duration,
+      });
+    }
+    case "beat": {
+      const duration = ms(op.duration, 600);
+      numNote("duration", op.duration, duration, "ms");
+      return revise(op, { duration });
+    }
     case "quiz": {
       const opts = choices(op.options, MAX_OPTIONS);
       const count = opts === null ? (op.options as string[]).length : opts.length;
+      const prompt = line(op.prompt);
+      const answer = Math.min(Math.max(Math.round(num(op.answer, 0)), 0), Math.max(count - 1, 0));
+      const why = op.why === undefined ? undefined : line(op.why);
+      const concept = op.concept === undefined ? undefined : name(op.concept);
+      trunc("prompt", op.prompt, prompt, MAX_TEXT);
+      if (notes && opts !== null && op.options !== undefined) {
+        if (!Array.isArray(op.options)) notes("quiz.options 不是数组，已清空");
+        else if (opts.length < op.options.length) notes(`quiz.options 超过 ${MAX_OPTIONS} 项，截到 ${opts.length} 项`);
+        else if (opts.some((o, i) => o !== op.options[i])) notes("quiz.options 含超过字限的项，已截断");
+      }
+      numNote("answer", op.answer, answer);
+      trunc("why", op.why, why ?? "", MAX_TEXT);
+      trunc("concept", op.concept, concept ?? "", MAX_NAME);
       return revise(op, {
-        prompt: line(op.prompt),
+        prompt,
         ...(opts === null ? {} : { options: opts }),
-        answer: Math.min(Math.max(Math.round(num(op.answer, 0)), 0), Math.max(count - 1, 0)),
-        ...(op.why !== undefined ? { why: line(op.why) } : {}),
-        ...(op.concept !== undefined ? { concept: name(op.concept) } : {}),
+        answer,
+        ...(op.why !== undefined ? { why } : {}),
+        ...(op.concept !== undefined ? { concept } : {}),
       });
     }
-    case "pause-for":
-      return revise(op, { reason: line(op.reason) });
-    case "answer":
+    case "pause-for": {
+      const reason = line(op.reason);
+      trunc("reason", op.reason, reason, MAX_TEXT);
+      return revise(op, { reason });
+    }
+    case "answer": {
       // The learner's own words, and the card they answer. `gate` is looked up with `===` against the
       // sequence numbers the log handed out, so a non-number is not a sloppy number — it is an answer
       // that silently belongs to no card, leaving a `text` of any type to be written into `said`, whose
@@ -376,10 +535,15 @@ export function guardOp(op: Op): Op {
       // A non-integer stays unmatchable rather than being rounded: rounding would attribute somebody's
       // words to whichever card happens to sit near the number, which rewrites the record. An answer
       // that matches nothing leaves the card open — the lesson asks again, and that is recoverable.
+      const gate = Number.isInteger(op.gate) ? op.gate : -1;
+      const text = line(op.text);
+      if (notes && gate !== op.gate) notes("answer.gate 不是整数，作答不属于任何卡");
+      trunc("text", op.text, text, MAX_TEXT);
       return revise(op, {
-        gate: Number.isInteger(op.gate) ? op.gate : -1,
-        text: line(op.text),
+        gate,
+        text,
       });
+    }
     default:
       // A verb the interpreter does not know stays as it is: it lands in no cue and no prop, so the
       // director hears about it from the tool layer rather than watching a blank board.

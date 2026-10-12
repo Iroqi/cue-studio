@@ -405,3 +405,90 @@ oxlint 仍是那 2 条基线警告（无新增）。`camera-moment.test.ts` 那�
 - 反向护栏：改前那份读法自己也得跑一遍（历史替身），原有断言不许为了变绿而改 ——
   只有当一条断言钉的**正是这一件消掉的东西**时才改它，并记在这里（D 改的是 `view.test.ts` 三条节拍条
   测试的入参 `duration`，断言正文一字未动）。
+
+---
+
+# 第二轮 brainstorm（2026-10-12）：Intelligent UI 的 Rough edges 里，哪一件是这一仓库的
+
+## 重新读了一遍 Intelligent UI（openui.com 的逆向拆解，GPT-6 随 ChatGPT 上线）
+
+第一轮（C-F）从 Intelligent UI 拿走的是三件"同构"（受限界面语言、流式呈现、交互不付费），判断
+"回答即界面"不是这个仓库的方向，"回答即演出"才是。这一轮把那篇拆解的 **Rough edges** 一节逐条过
+了一遍 —— OpenAI 自己列出的那些缺点，每一件都是一个"它没做到、我们能不能做到"的问题：
+
+| Intelligent UI 的 Rough edge | ChatGPT 的现状 | Cue Studio 的现状 | 判断 |
+| --- | --- | --- | --- |
+| 刷新后状态丢 | 滑块值存到 view-state 端点但不恢复 | 带子 = 状态，`#s=` 里 deflate 整卷，刷新原样重放 | 我们赢，吸收过了 |
+| 后续问题重造整块界面 | 每个 follow-up 都是新程序 | 带子只增不删，revision 叠层，接着讲就是接着演 | 我们赢，吸收过了 |
+| 流里 83% 是重发的代码 | 每几百毫秒整段重编译重发 | C-F 把"长一截只付一截"做到底 | 我们赢，吸收过了 |
+| **逻辑错误是静的** | 一个表达式抛错只少一个元素，算错的值照样上屏（仪表盘 $6,930 → $256,410） | 解释器是纯函数，导演的错误落在**门**（`guardOp`）和**回执**（`hasFrame`/`onStage`/`blindCamera`）两层 | 门那一层是静的 —— 见下 |
+| **非法属性没有反馈** | 编译器记 diagnostics，但**模型看不到**（同样的错后面继续犯） | 门把坏字段默认掉，导演的回执说"built X"，一个字不提门改了什么 | **同一个坑，见下** |
+| 布局写死、不用断点 | 固定列数与像素宽 | 无界平面 + 运镜，没有"断点"这回事 | 不适用 |
+| AppBlock 与宿主隔离 | iframe 里状态自持、不回调 | 仓库明确不要 JS 沙箱，`scene3d` 是数据不是代码 | 不适用 |
+
+## 选定：门拦下来的东西，导演得知道（gate diagnostics → 回执）
+
+仓库自己立的那条规矩叫"**回执不许替带子说话**"：`blindCamera` 说"镜头点名的东西观众看不见"、
+`fetch_prop` 说"只被 link 念到过名字"、`hasFrame`/`onStage` 说"这一刀不落"—— 每一处都在杀
+"模型把静默读成动过了"。**唯独门是静的**：`guardOp` 把 `camera.at={x:2,y:-1}` 夹回 0..1、
+把 `narrate.text` 截到 2000 字、把 `duration:1e18` 封顶 120 秒、把 `motion.mode="levitate"` 回退
+oscillate，回执照样说"narrated 52 chars"。导演接下来那一拍就建在一个没落地的假设上 —— 和
+Intelligent UI "同样的错后面继续犯"是同一件事，只是我们的编译器（门）连 diagnostics 都不记。
+
+改法照仓库已立好的形状：**门改了什么，回执就说什么**。diagnostics 只走导演那扇门（`append` 的
+听筒），进不了带子、不碰重放、restore 路径门外没有人不听 —— 和 `live=false` 录像不提问是同一句。
+
+## 设计要点
+
+1. `guardOp(op, notes?)`：第二个参数是一个 `(n: string) => void`。每个 case 先把修正值算成本地量，
+   `revise` 照旧是唯一落笔的地方；`notes` 提供时才逐字段比原值、把**改了什么**说成一句中文。
+   干净的一刀：`revise` 原样返回同一引用（`out === op`），一个字也不说。修过的 op 再进门：
+   已经干净，没有第二句话（幂等）。`notes` 不给（restore 路径、测试、所有现有调用）：
+   行为与现在逐字节一致，连 `if` 都不进 —— 价钱层的第一句是"诊断是修正的副产品，不是批量的税"。
+2. 报什么、不报什么：**只报真修正**。字段缺失走设计默认（`mode` 缺省 fit、`label` 缺省 id、
+   `duration` 缺省 900ms）不报 —— 那是导演没给，不是门改了它；字段给了但被截断/夹回/回退/丢弃
+   才报。数量 = 被改的字段数，与带子长度、批量大小无关。
+3. `OpLog.append(ops, track, onNote?)` → `Stage.append(ops, track, onNote?)` 原样传听筒。
+   `loop.ts` 的 `execute()` 只给**导演自己那批动词输出**挂听筒：paint 的占位框、reroll 的 discard、
+   answer 的落带都是内部落笔，不在听筒范围。restore 根本没有听筒参数（门外没有人）。
+4. 回执格式：有修正才加后缀 `\n（门拦下的：…；…）`，没有修正一个字也不多。与 `blindCamera` 那句
+   并存：修正的话在前，镜头的话在后。
+5. 带子一条诊断都不进：听筒是落笔的副产品，`tape` 还是那批 op。分享链接、重放、重排语义全不动。
+
+## 三层（照仓库老规矩）
+
+- **形状**：脏 op（超长 text、1e18 duration、不认的 mode/axis、越界 at/zoom/answer、超项 options、
+  坏 gate、图元封顶、与板同色背景）逐条断言"修正值正确 + 笔记一条不落 + 措辞钉死"；干净 op
+  同引用出去、零笔记；修过的 op 再进门零笔记（幂等）；带 notes 与不带 notes 吐出的 op `toEqual`。
+- **价钱**：一百格干净的批零笔记；一百格里三格脏只报三格（数量是修正数，不是批量）；restore
+  路径没有听筒参数、门外没有人。
+- **护栏**：同一批 op，带不带听筒落下的带子逐格相等、长度相等，序列化后一个诊断字都不含；
+  听筒只长在 `append` 那一扇门。
+
+## 落地形状
+
+`src/engine/guard.ts`（`guardOp` 加第二参 + 各 case 逐字段对账）、`src/engine/log.ts`、
+`src/engine/runtime.ts`（传听筒）、`src/agent/loop.ts`（`execute` 挂听筒拼回执）、
+新测试 `src/engine/guard-notes.test.ts`、README 新增一节、本文件补完实测与反向验证。
+
+## 实测与反向验证（同一轮补完）
+
+三层测试照方案落地：`src/engine/guard-notes.test.ts` 12 条（形状 7、价钱 3、护栏 2，
+其中"一百格里三格脏只报三格"同时是价钱与形状）、`src/agent/gate-receipt.test.ts` 2 条走
+scripted 排练装置（faux provider 要先用 `getModels` 注册，`setScriptedResponses` 才有地方接谱子），
+把"诊断真的到了导演手里"钉在工具结果的文本上。全套 391 → 405 条绿。tsc/build/oxlint 干净。
+
+反向验证（变异清单，全部在改后的代码上做）：
+- R1 把 `numNote` 误写成模块级 `num`（与取值函数撞名）—— 当场红 6 类：`steps` 变 NaN 连带
+  `motion.steps 越界，夹回 NaN`、quiz 的 `answer` 被影子函数吞掉、一百格里多报三笔。这正是
+  "听筒不许改变门的输出"那条护栏抓到的第一类错：诊断路径不是只读的。
+- R2 去掉 `sceneNote` 的图元数对账 —— 红 1（scene3d 测试）。
+- R3 回执只拼 `blindCamera` 不拼 `corrected` —— 红 2（gate-receipt 两条全红）。
+- R4 `append` 不给 `guardOp` 传听筒 —— 红 11（所有带修正的笔记测试）。
+- 等价且无断言的取舍记在这里：`trunc`/`numNote` 只在 `notes` 给出来时进 `if`，restore 路径零开销
+  没有断言看它；缺省不算修正（`mode` 缺省 fit 不报）没有断言钉它 —— 钉它的是仓库已有的
+  "干净 op 同引用"族测试。
+
+已知边界（沿用 E 收尾记下的那句）：`compile.test.ts` 的"每题一答"按毫秒比钉，并发 worker 抢 CPU
+时偶发红；基线（未改动的 3111b6b）单跑同样红（88~116ms 对 9ms 阈值），非这一件引入。探针按惯例
+跑完就删。

@@ -639,7 +639,12 @@ export class Teacher {
     if (call.name === "paint") return this.runPaint(args, track);
 
     const out = this.runVerb(call.name, args);
-    if (out.ops.length) this.stage.append(out.ops, track);
+    // The gate speaks into the receipt: what it corrected in this batch is the director's next
+    // assumption not having landed, and a receipt that said "built X" over a corrected op was the
+    // same silence `blindCamera` used to be. Internal appends (paint frames, reroll discards,
+    // answer ops) do not listen — nobody asked for those, and restore never has a listener at all.
+    const gateNotes: string[] = [];
+    if (out.ops.length) this.stage.append(out.ops, track, (n) => gateNotes.push(n));
     for (const op of out.ops) {
       if (op.kind === "build" || op.kind === "patch") this.stage.clearPreview(op.id);
     }
@@ -652,6 +657,7 @@ export class Teacher {
         await this.dispatchPaint(b.id, b.brief, { scene: b.scene }, track);
       }
     }
+    const corrected = gateNotes.length ? `\n（门拦下的：${gateNotes.join("；")}）` : "";
     if (out.result.startsWith("question queued") || out.result.startsWith("stage clock will stop")) {
       const gates = this.stage.openGateSeqs();
       // Park on the card the clock walks into first, not the one this turn queued last. The two differ
@@ -673,10 +679,10 @@ export class Teacher {
       this.stage.setDebtSuspended(false);
       this.parkedGate = null;
       if (answer === null) return { result: "（这一拍撤了下来，学习者没有作答）", isError: true };
-      return { result: this.settleGate(seq, answer) };
+      return { result: `${this.settleGate(seq, answer)}${corrected}` };
     }
     const note = this.blindCamera(out.ops);
-    return note ? { ...out, result: `${out.result}\n${note}` } : out;
+    return note ? { ...out, result: `${out.result}${corrected}\n${note}` } : corrected ? { ...out, result: `${out.result}${corrected}` } : out;
   }
 
   /**
