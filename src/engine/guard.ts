@@ -598,6 +598,36 @@ export function guardOp(op: Op, notes?: (n: string) => void): Op {
         ...(op.concept !== undefined ? { concept } : {}),
       });
     }
+    case "type": {
+      // The fourth card: he types the term. The door only knows the op, so it cleans the keyword list
+      // the same way it cleans a quiz's options — an empty accept list is a card with no right answer,
+      // which degrades to an open prompt rather than a broken test.
+      const prompt = line(op.prompt);
+      trunc("prompt", op.prompt, prompt, MAX_TEXT);
+      const words = (list: unknown, cap: number): string[] => {
+        if (!Array.isArray(list)) return [];
+        return list
+          .filter((x): x is string => typeof x === "string")
+          .map((x) => x.trim())
+          .filter((x) => x.length > 0)
+          .slice(0, cap)
+          .map((x) => line(x));
+      };
+      const accept = words(op.accept, 8);
+      const avoid = op.avoid === undefined ? undefined : words(op.avoid, 8);
+      const placeholder = op.placeholder === undefined ? undefined : str(op.placeholder).slice(0, MAX_TEXT);
+      const why = op.why === undefined ? undefined : line(op.why);
+      const concept = op.concept === undefined ? undefined : name(op.concept);
+      if (notes && accept.length === 0) notes("type.accept 一个可读的词都没有，这张卡退成开放式提问");
+      return revise(op, {
+        prompt,
+        accept,
+        ...(op.avoid !== undefined ? { avoid: avoid ?? [] } : {}),
+        ...(op.placeholder !== undefined ? { placeholder } : {}),
+        ...(op.why !== undefined ? { why } : {}),
+        ...(op.concept !== undefined ? { concept } : {}),
+      });
+    }
     case "answer": {
       // The learner's own words, and the card they answer. `gate` is looked up with `===` against the
       // sequence numbers the log handed out, so a non-number is not a sloppy number — it is an answer

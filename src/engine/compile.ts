@@ -833,10 +833,10 @@ export class Interpreter {
       if (!cur.verbs.includes(op.kind)) cur.verbs.push(op.kind);
       if (!cur.headline) {
         if (op.kind === "narrate") cur.headline = op.text;
-        else if (op.kind === "quiz" || op.kind === "probe" || op.kind === "dial") cur.headline = op.prompt;
+        else if (op.kind === "quiz" || op.kind === "probe" || op.kind === "dial" || op.kind === "type") cur.headline = op.prompt;
         else if (op.kind === "pause-for") cur.headline = op.reason;
       }
-      if (op.kind === "quiz" || op.kind === "probe" || op.kind === "dial" || op.kind === "pause-for") cur.gate = true;
+      if (op.kind === "quiz" || op.kind === "probe" || op.kind === "dial" || op.kind === "type" || op.kind === "pause-for") cur.gate = true;
 
       switch (op.kind) {
         case "build":
@@ -955,6 +955,7 @@ export class Interpreter {
         case "quiz":
         case "probe":
         case "dial":
+        case "type":
         case "pause-for": {
           const gate: Gate = { t: start, seq: entry.seq, kind: op.kind, op, said: null, until: start };
           this.gates.push(gate);

@@ -11,7 +11,7 @@ import { LearnerArchive } from "./ui/LearnerArchive";
 import { rowsFor } from "./ui/rows";
 import { LogRows } from "./ui/LogRows";
 import { getModels, loadConfig, saveConfig, setScriptedResponses, type LlmConfig } from "./llm/llm";
-import type { DialOp, OpEntry } from "./engine/types";
+import type { DialOp, OpEntry, TypeOp } from "./engine/types";
 
 const RATES = [0.5, 1, 2, 4];
 
@@ -53,6 +53,39 @@ function DialCard({ op, stage, onDone }: { op: DialOp; stage: Stage; onDone: (ok
           <span>{fmt(op.max)}</span>
         </div>
         <button onClick={confirm}>定下这个值</button>
+      </div>
+    </>
+  );
+}
+
+/**
+ * 第四张卡：一个空格。他打出那几个字，提交，那句话原样作为 answer 落带 —— 判分在导演那一头
+ * （settleGate 查该出现的词出现了没），这一头只把他写的话送上去。和 DialCard 同形：状态只活在这张卡上，
+ * 回放不挂这张卡，他写了什么读的是带上的 answer。
+ */
+function TypeCard({ op, stage, onDone }: { op: TypeOp; stage: Stage; onDone: (ok: boolean, text: string) => void }) {
+  const [text, setText] = useState("");
+  const submit = () => {
+    const say = text.trim();
+    if (!say) return;
+    const low = say.toLowerCase();
+    const ok = op.accept.every((w) => low.includes(w.toLowerCase()));
+    stage.answerGate(say);
+    onDone(ok, ok ? "词都在" : "还缺几个词 —— 接下来这一拍会演出来");
+  };
+  return (
+    <>
+      <p>{op.prompt}</p>
+      <div className="typecard">
+        <input
+          type="text"
+          className="typecard-input"
+          value={text}
+          placeholder={op.placeholder ?? "在这里打出你的回答…"}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+        />
+        <button onClick={submit} disabled={!text.trim()}>写下这句话</button>
       </div>
     </>
   );
@@ -252,6 +285,7 @@ export default function App() {
   const gate = snap.gate;  const isQuiz = gate?.kind === "quiz";
   const isProbe = gate?.kind === "probe";
   const isDial = gate?.kind === "dial";
+  const isType = gate?.kind === "type";
   // A tap on a board part closes the open probe: only the id goes to the stage, the loop grades it.
   const handlePick = (id: string) => {
     const g = snap.gate;
@@ -377,7 +411,9 @@ export default function App() {
         {gate && !isProbe && (
           <div className="gate">
             <div className="gate-card">
-              {isDial ? (
+              {isType ? (
+                <TypeCard op={gate.op as TypeOp} stage={stage} onDone={(ok, text) => setVerdict({ ok, text })} />
+              ) : isDial ? (
                 <DialCard op={gate.op as DialOp} stage={stage} onDone={(ok, text) => setVerdict({ ok, text })} />
               ) : isQuiz ? (
                 <>

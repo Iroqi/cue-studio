@@ -255,6 +255,33 @@ export interface DialOp {
 }
 
 /**
+ * 一张"落字"卡：和 quiz / probe / dial 同一张停表的卡，但学习者要的不是选一项、指一物、拨一数 ——
+ * 他要在一个空格里**打出那几个字**。
+ *
+ * Intelligent UI（OpenAI，2026-10）的界面元素里有一类是 forms：文本输入。前三张卡把"认得"考到头了
+ * （读选项 quiz、指图形 probe、数量感 dial），但有些问题的答案不是一个能认的东西，而是**必须由他
+ * 自己说出来的那个术语**："用一句话说清楚什么是导数""这两个力为什么不平衡"。他在底下 console 里
+ * 自由打字，按仓库的老规矩那永远是"未分级的证据"——导演接得到他的话，却没有一句"这一句里有没有那个
+ * 必须出现的词"。`type` 于是把这个空格搬到卡上：他打的那句话原样作为 `answer` 落带，判分比的是
+ * **那句话里有没有 `accept` 要求的每一个词**（大小写无关）——不是改卷，是查"该出现的术语出现了没"。
+ *
+ * `avoid` 是这门课上反复出现的错词：他打的话里带了任何一个，导演就被点名"他栽在这个常见误解上"，
+ * 而不是笼统的"答错了"。自由发挥、没打到要求的词，仍是他的原话递回导演，不替他宣布对错。
+ */
+export interface TypeOp {
+  kind: "type";
+  prompt: string;
+  /** The words he MUST say, all of them, case-insensitively. A fill-in is one; a one-sentence explanation can be two or three. */
+  accept: string[];
+  /** Words/phrases whose presence flags a known misconception — surfaced to the director, not graded wrong by themselves. */
+  avoid?: string[];
+  /** Placeholder inside the input box. */
+  placeholder?: string;
+  why?: string;
+  concept?: string;
+}
+
+/**
  * What the learner actually said, laid on the tape by the stage at the moment he says it.
  *
  * He is the only participant in a lesson whose words used to live outside it: the answer went into a
@@ -285,6 +312,7 @@ export type Op =
   | QuizOp
   | ProbeOp
   | DialOp
+  | TypeOp
   | PauseOp
   | AnswerOp;
 
@@ -392,8 +420,8 @@ export interface Cue {
 export interface Gate {
   t: number;
   seq: number;
-  kind: "quiz" | "pause-for" | "probe" | "dial";
-  op: QuizOp | ProbeOp | DialOp | PauseOp;
+  kind: "quiz" | "pause-for" | "probe" | "dial" | "type";
+  op: QuizOp | ProbeOp | DialOp | TypeOp | PauseOp;
   /** What the learner actually said for this card, read off the tape; null while it is still an open question. */
   said: string | null;
   /** End of the beat that asked it. His words belong to that beat: shown while the playhead is inside it, and nothing after. */

@@ -539,3 +539,27 @@ markup —— DOMPurify 那道信任边界一个字没动，陌生人的 `#s=` �
 
 tsc / build / oxlint（仍是那 2 条既有基线警告，0 新增）干净；vitest 全套 416 → 427 绿
 （唯一红的仍是 `compile.test.ts`"每题一答"那条按毫秒钉的已知 flaky，基线单跑同样红）。
+
+---
+
+# 第四轮 brainstorm（2026-10-13）：第四张卡 —— 不是认、不是估，是他自己说出来
+
+## 前三张卡走到哪了
+
+read（quiz 读选项）/ tap（probe 指台上图形）/ dial（tune 拨一个数）。Intelligent UI 那类界面元素里
+还剩 forms（文本输入）没有 import：前三个都在考"认得/估"，可"用一句话说清楚什么是导数"这种题，
+答案不是一个能认的东西，必须由他自己说出来。
+
+## 选定：第四张卡 `type`（动词 `type`）
+
+同一个停表、同一本账（停表、waitForGate、作答落带可重放、live=false 录像不问、concept 记反复错过），
+差别是答案是他打出的那句话，判分比"该出现的词出现了没"（accept 全在 = 对，避免改卷）。
+avoid 列这门课上反复出现的错词，他带了哪个就点名他栽在那个误解上。
+
+## 落地与实测
+
+`types.ts`（TypeOp + Op/Gate 并集）、`guard.ts`（accept 去空去脏封顶，空表退成开放式）、
+`compile.ts`（gate 分支加 type）、`tools/director.ts`（动词 type + 工具定义，accept 空/超 8 不成题）、
+`agent/loop.ts`（settleGate 第四支，关键词判分 + avoid 误解点名）、`App.tsx`（TypeCard：文本框 + 回车提交）、
+`index.css`（.typecard 一族）、`agent/prompt.ts`（语法加一条"要考他说出术语时用 type"）、
+新测试 `engine/type.test.ts` 8 条。tsc/build/oxlint（仍 2 条基线，0 新增）干净。

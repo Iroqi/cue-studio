@@ -788,6 +788,47 @@ export class Teacher {
         .join("\n");
     }
 
+    if (op.kind === "type") {
+      // Grading is keyword-presence, not essay grading: correct iff his text contains EVERY required
+      // term. A required list the door emptied means the director gave nothing to check against — treat
+      // his words as ungraded evidence, same as free text to any other card.
+      const need = op.accept.map((w) => w.toLowerCase());
+      if (need.length === 0)
+        return `他写了：「${answer}」。这张卡没有定要出现的词，就当他自由发挥：从这句话出发继续演，别替他宣布对错。`;
+      const low = answer.toLowerCase();
+      const missing = need.filter((w) => !low.includes(w));
+      const correct = missing.length === 0;
+      const hitAvoid = (op.avoid ?? []).map((w) => w.toLowerCase()).filter((w) => low.includes(w));
+      const prior = missesOn(this.teaching.title, op.concept);
+      archiveAttempt({
+        at: Date.now(),
+        topic: this.teaching.title,
+        prompt: op.prompt,
+        options: [answer, op.accept.join("、")],
+        choice: 0,
+        answer: 1,
+        correct,
+        concept: op.concept,
+      });
+      const here = op.concept ? `「${op.concept}」这一处` : "这一处";
+      return [
+        `他写了：「${answer}」。${correct ? "该出现的词都在。" : `缺了：${missing.join("、")}。`}`,
+        hitAvoid.length ? `⚠️ 他带了这个常见错词：${hitAvoid.join("、")} —— 他栽在这个误解上，不是没复习。` : "",
+        op.why ? `你当初给这道题的理由：${op.why}` : "",
+        correct
+          ? prior > 0
+            ? `${here}他以前没说全，这次说全了：可以往前走，但别当成他天生会用自己的话说。`
+            : "这一句是证据，可以往前走。别把它当成整个概念已经讲通。"
+          : prior > 0
+            ? `${here}他已经是第 ${prior + 1} 次没说全同一个词。再问一遍没用：把那个词指给他看过之后，换个情境让他再说一次。`
+            : hitAvoid.length
+              ? `他不是没听，是把那个错词当真了。别重复正确答案：就着他写的那句，把他带进来的那个错词和正确的说法并置一次。`
+              : `他缺了「${missing.join("、")}」。别把正确答案念一遍：从他写的那句出发，把缺的那个词在台上演出来，再请他说一次。`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    }
+
     const quiz = op;
     const choice = quiz.options.indexOf(answer);
     // Free text is not a graded choice: it is evidence of how he put it, and nothing more.

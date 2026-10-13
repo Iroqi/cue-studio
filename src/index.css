@@ -592,6 +592,45 @@ button.x {
   color: var(--cy);
 }
 
+/* A type card: one box, he types the term. */
+.typecard {
+  display: grid;
+  gap: 12px;
+  justify-items: stretch;
+}
+
+.typecard-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  font-size: 16px;
+  border-radius: 11px;
+  background: #171327;
+  color: #e8e6f0;
+}
+
+.typecard-input:focus {
+  outline: none;
+  border-color: var(--cy);
+}
+
+.typecard button {
+  padding: 10px 22px;
+  font-size: 15px;
+  border-radius: 11px;
+  background: #171327;
+  justify-self: center;
+}
+
+.typecard button:hover:not(:disabled) {
+  border-color: var(--cy);
+  color: var(--cy);
+}
+
+.typecard button:disabled {
+  opacity: 0.4;
+}
+
 /* ── the dock: beat rail + composer, floating at the foot of the board ── */
 .marquee {
   position: absolute;
