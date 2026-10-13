@@ -201,6 +201,28 @@ export interface PauseOp {
 }
 
 /**
+ * 一张"指认"卡：和 quiz 同一张停表的卡，但学习者不是读一串文字选项，而是**直接在台上点他说的那个图形**。
+ *
+ * 智能 UI（OpenAI，2026-10）把回答做成可点选的界面元素："理解一个概念，最好用一张可选中部件的交互图"。
+ * 这门课的媒介本来就是一块无界的板 —— 问到"哪个是合力"时，让他读"箭头甲/箭头乙"再选一个，等于把板上
+ * 明明摆在那里的箭头又抄成了文字。`probe` 于是把答案从卡里搬回台上：`targets` 是此刻站着的几件道具，
+ * 时钟停住时它们在板上变成可点；学习者点中哪一件，哪一件的 id 就作为一句 `answer` 落在带上。
+ *
+ * 它和 quiz 共用同一本账（停表、`waitForGate`、作答落带可重放、按 `concept` 记反复错过），唯一的差别是
+ * **答案是一个道具 id，不是选项下标**。所以 `answer` 是道具 id，不是数字；判分比的是 id。
+ */
+export interface ProbeOp {
+  kind: "probe";
+  prompt: string;
+  /** The props on stage the learner may tap. 2..6; each must be standing when this lands. */
+  targets: string[];
+  /** The prop id that is correct — graded by id, not by option index. */
+  answer: string;
+  why?: string;
+  concept?: string;
+}
+
+/**
  * What the learner actually said, laid on the tape by the stage at the moment he says it.
  *
  * He is the only participant in a lesson whose words used to live outside it: the answer went into a
@@ -229,6 +251,7 @@ export type Op =
   | HighlightOp
   | MotionOp
   | QuizOp
+  | ProbeOp
   | PauseOp
   | AnswerOp;
 
@@ -336,8 +359,8 @@ export interface Cue {
 export interface Gate {
   t: number;
   seq: number;
-  kind: "quiz" | "pause-for";
-  op: QuizOp | PauseOp;
+  kind: "quiz" | "pause-for" | "probe";
+  op: QuizOp | ProbeOp | PauseOp;
   /** What the learner actually said for this card, read off the tape; null while it is still an open question. */
   said: string | null;
   /** End of the beat that asked it. His words belong to that beat: shown while the playhead is inside it, and nothing after. */

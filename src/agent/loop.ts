@@ -706,9 +706,52 @@ export class Teacher {
    * is told which option was correct and is shown its own reason, so it can't be flattered by the
    * interface. Only a quiz choice is evidence — a pause the learner clicked through records nothing.
    */
+  /**
+   * The verdict is computed here rather than handed up by the button that was clicked: the model
+   * is told which option was correct and is shown its own reason, so it can't be flattered by the
+   * interface. Only a quiz/probe choice is evidence — a pause the learner clicked through records nothing.
+   *
+   * A probe's answer is a prop id he tapped on the board (intelligent-UI "selectable part"), graded by
+   * id; a word he typed instead of tapping is ungraded evidence of how he put it, like a free-text quiz.
+   */
   private settleGate(seq: number, answer: string): string {
-    const quiz = this.stage.compiled.gates.find((g) => g.seq === seq)?.op;
-    if (!quiz || quiz.kind !== "quiz") return `学习者回答：${answer}`;
+    const op = this.stage.compiled.gates.find((g) => g.seq === seq)?.op;
+    if (!op || op.kind === "pause-for") return `学习者回答：${answer}`;
+    /** A prop id back to the name the director gave it, for a line he can actually read. */
+    const label = (id: string) => this.stage.compiled.props.get(id)?.revisions.at(-1)?.label ?? id;
+
+    if (op.kind === "probe") {
+      const onBoard = op.targets.includes(answer);
+      if (!onBoard) return `学习者没有点台上的图形，直接说了：「${answer}」。这就是他现在的理解，从它出发继续演；不要替他宣布对错，也别把这句话当成点对了。`;
+      const correct = answer === op.answer;
+      const prior = missesOn(this.teaching.title, op.concept);
+      archiveAttempt({
+        at: Date.now(),
+        topic: this.teaching.title,
+        prompt: op.prompt,
+        options: op.targets.map(label),
+        choice: op.targets.indexOf(answer),
+        answer: op.targets.indexOf(op.answer),
+        correct,
+        concept: op.concept,
+      });
+      const here = op.concept ? `「${op.concept}」这一处` : "这一处";
+      return [
+        `学习者点了「${label(answer)}」（${answer}）。${correct ? "点对了。" : `点错了 —— 正确的是「${label(op.answer)}」（${op.answer}）。`}`,
+        op.why ? `你当初给这道题的理由：${op.why}` : "",
+        correct
+          ? prior > 0
+            ? `${here}他以前错过 ${prior} 次，这次点对了：可以往前走，但别当成他天生会了。`
+            : "这一指是证据，可以往前走。别把它当成整个概念已经讲通。"
+          : prior > 0
+            ? `${here}他已经是第 ${prior + 1} 次点错。再画一遍同样的图没有意义：换个载体 —— motion 让它自己走一遍、把他点错的那件和正确的那件并置 —— 演完用同样的 concept 再 point_at 一次。`
+            : `他点了「${label(answer)}」而不是「${label(op.answer)}」：在他眼里这两个形状的角色是反的。把这两件留在台上并置一次，别重画正确答案。`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    }
+
+    const quiz = op;
     const choice = quiz.options.indexOf(answer);
     // Free text is not a graded choice: it is evidence of how he put it, and nothing more.
     if (choice < 0) return `学习者没有选选项，直接说了：「${answer}」。这就是他现在的理解，从它出发继续演；不要替他宣布对错，也别把这句话当成答对了。`;

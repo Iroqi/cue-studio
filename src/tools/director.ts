@@ -314,6 +314,23 @@ export function directorTools(
       case "ask_learner":
         ops.push({ kind: "quiz", prompt: S(args.prompt), options: A(args.options).map((o) => S(o)), answer: N(args.answer, 0), why: args.why ? S(args.why) : undefined, concept: args.concept ? S(args.concept) : undefined });
         return { ops, result: "question queued; the stage clock stops until the learner answers" };
+      case "point_at": {
+        // The learner taps the part on the board instead of reading a text card. Every candidate has
+        // to be standing *right now* — a tap target that is offstage or swept away is a button that
+        // leads nowhere, same silence `blindCamera` called out. And the correct id has to be one of
+        // the offered taps, otherwise there is no right answer on the board at all.
+        const targets = [...new Set(A(args.targets).map((t) => S(t)).filter(Boolean))];
+        if (targets.length < 2) return nope("point_at 至少要给 2 个台上的道具让他点（把答案和迷惑项都列进 targets）。");
+        if (targets.length > 6) return nope(`point_at 最多 6 个可点目标，给了 ${targets.length} —— 选最关键的那几个，别让板上一片都能点。`);
+        for (const id of targets) {
+          const miss = onStage(id);
+          if (!miss.ok) return nope(miss.why);
+        }
+        const answer = S(args.answer);
+        if (!targets.includes(answer)) return nope(`point_at 的正确答案「${answer}」不在可点目标里（${targets.join("、")}）。他点不到一个对的东西，这题就是坏的。`);
+        ops.push({ kind: "probe", prompt: S(args.prompt), targets, answer, why: args.why ? S(args.why) : undefined, concept: args.concept ? S(args.concept) : undefined });
+        return { ops, result: `question queued; the clock stops and the learner taps one of ${targets.join("、")} on the board — tell them where to look, do NOT list text options.` };
+      }
       case "pause_for":
         ops.push({ kind: "pause-for", reason: S(args.reason) });
         return { ops, result: "stage clock will stop and wait for the learner" };
@@ -439,6 +456,7 @@ export function directorTools(
       }),
     },
     { name: "ask_learner", description: "Stop the clock and put a real question to the learner. Execution continues only after they answer; the tool result carries their choice, so you branch from it. A learner who types instead of choosing answers in their own words, and you are told that ungraded.", parameters: Type.Object({ prompt: str("the question"), options: Type.Array(str("at least 2 choices")), answer: num("index of the correct choice"), why: Type.Optional(str("said only after they answer")), concept: Type.Optional(str("the single idea this question probes, e.g. 分量只依赖终点。用同样措辞重复它，跨课的反复错过才认得出来")) }) },
+    { name: "point_at", description: "Stop the clock and ask the learner to TAP the part on the board — the answer is a prop id, not a text option. Use this when the point is recognition of something already drawn (「which arrow is the resultant?」「which edge is the hypotenuse?」): the shapes are on stage, so let him point, do not copy them into a text card. Every target must already be standing. The clock stops; his tap lands on the tape as the answer and you branch from which id he chose.", parameters: Type.Object({ prompt: str("the question, e.g. 点一下：哪个是合力？"), targets: Type.Array(str("prop ids the learner may tap — 2..6, all currently on stage, include the correct one and the plausible distractors")), answer: str("the prop id that is correct (must be one of targets)"), why: Type.Optional(str("said only after they tap")), concept: Type.Optional(str("the single idea this probes, e.g. 合力是对角端点")) }) },
     { name: "pause_for", description: "Stop the clock until the learner presses continue. Use after a loaded idea, not after every sentence.", parameters: Type.Object({ reason: str("what the learner should do with this pause") }) },
     { name: "note_progress", description: "Record teaching state (concepts genuinely covered, learner condition). This is written into the system prompt sections, so history stays cache-stable. Call it whenever a concept is actually understood.", parameters: Type.Object({ concepts_covered: Type.Optional(Type.Array(str("short concept names"))), learner_state: Type.Optional(str("one line: where the learner is now")), beats_advanced: Type.Optional(num("how many beats of the plan this turn completed")) }) },
     { name: "stage_state", description: "Read the current stage: clock, camera, scenes, live props with geometry, open questions.", parameters: Type.Object({}) },

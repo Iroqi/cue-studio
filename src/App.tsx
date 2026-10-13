@@ -211,6 +211,15 @@ export default function App() {
   };
 
   const gate = snap.gate;  const isQuiz = gate?.kind === "quiz";
+  const isProbe = gate?.kind === "probe";
+  // A tap on a board part closes the open probe: only the id goes to the stage, the loop grades it.
+  const handlePick = (id: string) => {
+    const g = snap.gate;
+    if (!g || g.kind !== "probe") return;
+    const right = id === (g.op as { answer: string }).answer;
+    stage.answerGate(id);
+    setVerdict({ ok: right, text: right ? "点对了" : "点错了 —— 接下来这一拍会演出为什么" });
+  };
   // The light follows the playhead, not the ownership: looking back at your own lesson dims it, and the lesson is still yours.
   const liveTail = snap.following;
   const onto = !speaking;
@@ -230,7 +239,7 @@ export default function App() {
   return (
     <div className={"app" + (drawer ? " open" : "")} style={{ "--dock": `${dockH}px` } as CSSProperties}>
       <main>
-        <StageView stage={stage} bottomInset={dockH} />
+        <StageView stage={stage} bottomInset={dockH} onPick={handlePick} />
         <input
           className="timeline"
           type="range"
@@ -325,7 +334,7 @@ export default function App() {
           </div>
         )}
 
-        {gate && (
+        {gate && !isProbe && (
           <div className="gate">
             <div className="gate-card">
               {isQuiz ? (
@@ -357,6 +366,13 @@ export default function App() {
                 </>
               )}
             </div>
+          </div>
+        )}
+        {/* A probe asks the learner to tap the part on the board: no blocking card — that would cover the very shapes he has to point at. Just a nudge up high, out of the way. */}
+        {isProbe && gate && (
+          <div className="probe-hint">
+            <p>{(gate.op as { prompt: string }).prompt}</p>
+            <span>直接在舞台上点一下你说的那个图形</span>
           </div>
         )}
         {verdict && <div className={"verdict" + (verdict.ok ? " ok" : " miss")}>{verdict.text}</div>}

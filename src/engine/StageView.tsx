@@ -201,7 +201,7 @@ function hydrateMath(root: ShadowRoot) {
   }
 }
 
-function PropView({ p, t }: { p: VisibleProp; t: number }) {
+function PropView({ p, t, pickable = false, onPick }: { p: VisibleProp; t: number; pickable?: boolean; onPick?: (id: string) => void }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const signature = `${p.svg}|${p.html}|${p.css}`;
 
@@ -254,16 +254,16 @@ function PropView({ p, t }: { p: VisibleProp; t: number }) {
   const style = { position: "absolute" as const, left: p.box.x, top: p.box.y, width: p.box.w, height: p.box.h };
 
   if (p.scene3d) {
-    const cls = ["prop", "prop3d", p.highlight && `hl-${p.highlight}`].filter(Boolean).join(" ");
+    const cls = ["prop", "prop3d", p.highlight && `hl-${p.highlight}`, pickable && "pickable"].filter(Boolean).join(" ");
     return (
-      <div className={cls} data-prop={p.id} style={style}>
+      <div className={cls} data-prop={p.id} style={style} onClick={pickable && onPick ? () => onPick(p.id) : undefined}>
         <Scene3D spec={p.scene3d} t={t} />
       </div>
     );
   }
 
-  const cls = ["prop", p.awaiting && "draft", p.highlight && `hl-${p.highlight}`].filter(Boolean).join(" ");
-  return <div ref={ref} className={cls} data-prop={p.id} style={style} />;
+  const cls = ["prop", p.awaiting && "draft", p.highlight && `hl-${p.highlight}`, pickable && "pickable"].filter(Boolean).join(" ");
+  return <div ref={ref} className={cls} data-prop={p.id} style={style} onClick={pickable && onPick ? () => onPick(p.id) : undefined} />;
 }
 
 function veilOpacity(progress: number): number {
@@ -287,10 +287,16 @@ function verseRows(text: string, progress: number): { said: string; unsaid: stri
   return rows;
 }
 
-export function StageView({ stage, bottomInset = 0 }: { stage: Stage; bottomInset?: number }) {
+export function StageView({ stage, bottomInset = 0, onPick }: { stage: Stage; bottomInset?: number; onPick?: (id: string) => void }) {
   const s = useSyncExternalStore(stage.subscribe, stage.getSnapshot);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ w: 1600, h: 900 });
+
+  // A live `probe` turns its named props into tappable parts: the learner points at the shape on the
+  // board instead of reading a text card. On a replay (live=false) `currentGate()` is null, so the set
+  // is empty and nothing on the board accepts a click — a recording asks no one.
+  const probe = s.gate?.kind === "probe" ? (s.gate.op as { targets: string[] }).targets : null;
+  const pickable = probe ? new Set(probe) : null;
 
   useLayoutEffect(() => {
     const el = hostRef.current;
@@ -317,7 +323,7 @@ export function StageView({ stage, bottomInset = 0 }: { stage: Stage; bottomInse
     <div className="stage" data-track={s.track} ref={hostRef}>
       <div className={`world${dimRest ? " dim-rest" : ""}`} style={{ transform: `translate(${ox}px, ${oy}px) scale(${scale})` }}>
         {s.props.map((p) => (
-          <PropView key={p.id} p={p} t={s.t} />
+          <PropView key={p.id} p={p} t={s.t} pickable={pickable?.has(p.id) ?? false} onPick={onPick} />
         ))}
       </div>
       {s.veil && <div className={`veil veil-${s.veil.style}`} style={{ opacity: veilOpacity(s.veil.progress) }} />}

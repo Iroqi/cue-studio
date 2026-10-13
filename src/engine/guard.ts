@@ -526,6 +526,29 @@ export function guardOp(op: Op, notes?: (n: string) => void): Op {
       trunc("reason", op.reason, reason, MAX_TEXT);
       return revise(op, { reason });
     }
+    case "probe": {
+      // The card whose answer is a tap on a prop, not a text option. Guard only knows the op itself,
+      // not what is standing: it clamps the list of tap targets and the correct id the same way it
+      // clamps a quiz's options. Which named props are actually on stage is the director tool's check.
+      const prompt = line(op.prompt);
+      const raw = Array.isArray(op.targets) ? op.targets : [];
+      const clean = [...new Set(raw.filter((x): x is string => typeof x === "string").map((x) => name(x)))].slice(0, MAX_TARGETS);
+      const answer = name(op.answer);
+      const why = op.why === undefined ? undefined : line(op.why);
+      const concept = op.concept === undefined ? undefined : name(op.concept);
+      trunc("prompt", op.prompt, prompt, MAX_TEXT);
+      if (notes && clean.length !== raw.length) notes(`probe.targets 不认或重复的项被清掉/封顶，剩 ${clean.length} 个可点目标`);
+      trunc("answer", op.answer, answer, MAX_NAME);
+      trunc("why", op.why, why ?? "", MAX_TEXT);
+      trunc("concept", op.concept, concept ?? "", MAX_NAME);
+      return revise(op, {
+        prompt,
+        targets: clean,
+        answer,
+        ...(op.why !== undefined ? { why } : {}),
+        ...(op.concept !== undefined ? { concept } : {}),
+      });
+    }
     case "answer": {
       // The learner's own words, and the card they answer. `gate` is looked up with `===` against the
       // sequence numbers the log handed out, so a non-number is not a sloppy number — it is an answer
