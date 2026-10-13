@@ -549,6 +549,55 @@ export function guardOp(op: Op, notes?: (n: string) => void): Op {
         ...(op.concept !== undefined ? { concept } : {}),
       });
     }
+    case "dial": {
+      // The third card: he drags a number out of a range instead of reading options or tapping a shape.
+      // The door only knows the op, not what he drags — it clamps the range and the correct value the
+      // same way it clamps a quiz's options. A range that is empty or inverted is not a broken card the
+      // learner fights: swap the bounds, and if they still collapse, widen them around the correct value.
+      const prompt = line(op.prompt);
+      trunc("prompt", op.prompt, prompt, MAX_TEXT);
+      const BIG = 1_000_000;
+      const bound = (v: unknown) => (isNum(v) ? Math.min(Math.max(v, -BIG), BIG) : 0);
+      let min = bound(op.min);
+      let max = bound(op.max);
+      let value = bound(op.value);
+      if (min >= max) {
+        // Inverted pair: swap. An equal pair: give the value room both sides so the rod has length.
+        if (min > max) [min, max] = [max, min];
+        else {
+          min = value - (value === 0 ? 1 : Math.abs(value));
+          max = value + (value === 0 ? 1 : Math.abs(value));
+        }
+      }
+      if (value < min) value = min;
+      else if (value > max) value = max;
+      const range = max - min;
+      // A tolerance that swallows the whole range makes every drag correct; cap it at half the range.
+      let tol = isNum(op.tol) && op.tol >= 0 ? op.tol : 0;
+      if (tol > range / 2) tol = range / 2;
+      const unit = op.unit === undefined ? undefined : str(op.unit).slice(0, MAX_NAME);
+      const label = op.label === undefined ? undefined : str(op.label).slice(0, MAX_NAME);
+      const why = op.why === undefined ? undefined : line(op.why);
+      const concept = op.concept === undefined ? undefined : name(op.concept);
+      if (notes && (min !== bound(op.min) || max !== bound(op.max))) notes("dial.min/max 不可读或上下颠倒，已修回一段可读区间");
+      if (notes && value !== bound(op.value)) notes("dial.value 落在区间外，已夹回区间内");
+      numNote("tol", op.tol, tol);
+      trunc("unit", op.unit, unit ?? "", MAX_NAME);
+      trunc("label", op.label, label ?? "", MAX_NAME);
+      trunc("why", op.why, why ?? "", MAX_TEXT);
+      trunc("concept", op.concept, concept ?? "", MAX_NAME);
+      return revise(op, {
+        prompt,
+        min,
+        max,
+        value,
+        tol,
+        ...(op.unit !== undefined ? { unit } : {}),
+        ...(op.label !== undefined ? { label } : {}),
+        ...(op.why !== undefined ? { why } : {}),
+        ...(op.concept !== undefined ? { concept } : {}),
+      });
+    }
     case "answer": {
       // The learner's own words, and the card they answer. `gate` is looked up with `===` against the
       // sequence numbers the log handed out, so a non-number is not a sloppy number — it is an answer

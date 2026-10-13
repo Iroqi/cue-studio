@@ -223,6 +223,38 @@ export interface ProbeOp {
 }
 
 /**
+ * 一张"拨杆"卡：和 quiz / probe 同一张停表的卡，但学习者既不读文字选项，也不在台上点一个现成的形状 ——
+ * 他在一段 `[min, max]` 上**自己拨出一个数**。
+ *
+ * Intelligent UI（OpenAI，2026-10）把回答做成可拨的界面元素："一个解释，最好用一张能上手拨的交互图"、
+ * 随附可操作的计算器。这门课里，凡是问"多重 / 多长 / 多快 / 多大角度"的题，选项（quiz）是让他认一个现成
+ * 的答案，台上点形状（probe）是让他认一个现成的图形 —— 都在考"认得"。而"先拨一个你猜的值，再看答案"
+ * 考的是**估**：那才是物理直觉真的所在。所以第三张卡是一根杆，不是第三串选项。
+ *
+ * 它和 quiz / probe 共用同一本账（停表、`waitForGate`、作答落带可重放、按 `concept` 记反复错过），唯一的
+ * 差别是**答案是一个数，按距离判**：`|他拨的值 - value| <= tol` 算对。杆本身是舞台自己渲染的原生
+ * `<input type="range">`（不是模型交的 markup，所以 DOMPurify 那道信任边界一个字都不用改）；他拨的那一下
+ * 不进带子 —— 落带的只有他**按下确认**那一刻的那个数，和 probe 落带一个 id 是同一件事。
+ */
+export interface DialOp {
+  kind: "dial";
+  prompt: string;
+  /** The range the learner may set. `min < max`; the door swaps / widens an inverted pair rather than printing a broken card. */
+  min: number;
+  max: number;
+  /** The correct value, graded continuously by distance. Clamped into [min, max] by the door. */
+  value: number;
+  /** Absolute tolerance: `|his - value| <= tol` is correct. 0 means "exactly". */
+  tol: number;
+  /** Unit shown next to the readout, e.g. "Hz" / "m/s" / "°". Display only; the tape carries the bare number. */
+  unit?: string;
+  /** A short caption above the slider, e.g. "频率". Display only. */
+  label?: string;
+  why?: string;
+  concept?: string;
+}
+
+/**
  * What the learner actually said, laid on the tape by the stage at the moment he says it.
  *
  * He is the only participant in a lesson whose words used to live outside it: the answer went into a
@@ -252,6 +284,7 @@ export type Op =
   | MotionOp
   | QuizOp
   | ProbeOp
+  | DialOp
   | PauseOp
   | AnswerOp;
 
@@ -359,8 +392,8 @@ export interface Cue {
 export interface Gate {
   t: number;
   seq: number;
-  kind: "quiz" | "pause-for" | "probe";
-  op: QuizOp | ProbeOp | PauseOp;
+  kind: "quiz" | "pause-for" | "probe" | "dial";
+  op: QuizOp | ProbeOp | DialOp | PauseOp;
   /** What the learner actually said for this card, read off the tape; null while it is still an open question. */
   said: string | null;
   /** End of the beat that asked it. His words belong to that beat: shown while the playhead is inside it, and nothing after. */

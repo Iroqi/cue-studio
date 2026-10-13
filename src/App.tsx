@@ -11,13 +11,52 @@ import { LearnerArchive } from "./ui/LearnerArchive";
 import { rowsFor } from "./ui/rows";
 import { LogRows } from "./ui/LogRows";
 import { getModels, loadConfig, saveConfig, setScriptedResponses, type LlmConfig } from "./llm/llm";
-import type { OpEntry } from "./engine/types";
+import type { DialOp, OpEntry } from "./engine/types";
 
 const RATES = [0.5, 1, 2, 4];
 
 type Tab = "log" | "config" | "archive";
 
 const SAMPLES = ["向量加法与力的分解", "梯度下降为什么会往下走", "复数乘法就是旋转", "极限：越靠近不等于已经到了"];
+
+/**
+ * 第三张卡：一根杆。他拨一个数，按下确认，那个数作为 answer 落带 —— 判分在导演那一头（settleGate），
+ * 这一头只算一句即时的对错给个回执，不替带子说话。杆是舞台自己渲染的原生 range，不是模型交的 markup，
+ * 所以 DOMPurify 那道信任边界一个字都不用动。状态只活在这张卡上：回放（live=false）根本不挂这张卡，
+ * 他拨的那一下本来就不进带子，进带子的只有确认那一刻的那个数。
+ */
+function DialCard({ op, stage, onDone }: { op: DialOp; stage: Stage; onDone: (ok: boolean, text: string) => void }) {
+  const mid = (op.min + op.max) / 2;
+  const [v, setV] = useState(mid);
+  const fmt = (x: number) => `${Number.isInteger(x) ? x : x.toFixed(2)}${op.unit ? " " + op.unit : ""}`;
+  const confirm = () => {
+    const ok = Math.abs(v - op.value) <= op.tol + 1e-9;
+    stage.answerGate(String(v));
+    onDone(ok, ok ? "拨到了" : `拨在 ${fmt(v)} —— 接下来这一拍会演出为什么`);
+  };
+  return (
+    <>
+      <p>{op.prompt}</p>
+      <div className="dial">
+        {op.label && <span className="dial-label">{op.label}</span>}
+        <div className="dial-readout">{fmt(v)}</div>
+        <input
+          type="range"
+          min={op.min}
+          max={op.max}
+          step={(op.max - op.min) / 200}
+          value={v}
+          onChange={(e) => setV(Number(e.target.value))}
+        />
+        <div className="dial-ends">
+          <span>{fmt(op.min)}</span>
+          <span>{fmt(op.max)}</span>
+        </div>
+        <button onClick={confirm}>定下这个值</button>
+      </div>
+    </>
+  );
+}
 
 export default function App() {
   const stage = useMemo(() => new Stage(), []);
@@ -212,6 +251,7 @@ export default function App() {
 
   const gate = snap.gate;  const isQuiz = gate?.kind === "quiz";
   const isProbe = gate?.kind === "probe";
+  const isDial = gate?.kind === "dial";
   // A tap on a board part closes the open probe: only the id goes to the stage, the loop grades it.
   const handlePick = (id: string) => {
     const g = snap.gate;
@@ -337,7 +377,9 @@ export default function App() {
         {gate && !isProbe && (
           <div className="gate">
             <div className="gate-card">
-              {isQuiz ? (
+              {isDial ? (
+                <DialCard op={gate.op as DialOp} stage={stage} onDone={(ok, text) => setVerdict({ ok, text })} />
+              ) : isQuiz ? (
                 <>
                   <p>{(gate.op as { prompt: string }).prompt}</p>
                   <div className="opts">

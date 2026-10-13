@@ -492,3 +492,50 @@ scripted 排练装置（faux provider 要先用 `getModels` 注册，`setScripte
 已知边界（沿用 E 收尾记下的那句）：`compile.test.ts` 的"每题一答"按毫秒比钉，并发 worker 抢 CPU
 时偶发红；基线（未改动的 3111b6b）单跑同样红（88~116ms 对 9ms 阈值），非这一件引入。探针按惯例
 跑完就删。
+
+---
+
+# 第三轮 brainstorm（2026-10-13）：Intelligent UI 的第三张卡 —— 不是认，是估
+
+## 前两轮走到哪了
+
+第一轮（C–F）从 Intelligent UI 拿走"受限界面语言 / 流式呈现 / 交互不付费"，兑现成三处增量续排；
+第二轮（门的回执）从 Rough edges 拿走"非法属性没有反馈"，兑现成 `guardOp` 的听筒；
+probe（f34fdac）拿走"可选中部件"，把答案从文字卡搬回台上。三张卡到齐了两张：
+`quiz`（读一串文字选项）和 `probe`（点台上一个现成的形状）。
+
+## 再读一遍那张拆解，问：还剩哪一种"碰"没有
+
+Intelligent UI 的例子里有两类动作被混着说：一类是"选/点"（buttons、selectable parts），
+一类是"拨/输"（sliders、calculators、editable charts）。本仓库只 import 了第一类。
+"这根弹簧 k 大概多少""起飞速度得多大""这个角仰还是俯"——这种问题的教学目的不是**认**一个现成
+答案，是**估**一个量。给一串选项是让他认你写好的数，让他点台上形状是让他认你画好的图；
+两样都在考"认得"，而量级、方向、数量级那点物理直觉，只能让他自己拨出来。
+
+## 选定：第三张卡 `dial`（动词 `tune`）
+
+和 quiz/probe 同一张停表的卡，复用全部既有账本（停表、`waitForGate`、作答落带可重放、
+live=false 录像不问、按 concept 记反复错过），唯一差别：**答案是一个数，按距离判**
+`|his - value| <= tol`。杆是舞台自己渲染的原生 `<input type="range">`，不是模型交的
+markup —— DOMPurify 那道信任边界一个字没动，陌生人的 `#s=` 带也只能给一段区间，给不出脚本。
+他拨的那一下不进带子，落带的只有确认那一刻的那个数（probe 落带一个 id 的同一件事）。
+
+## 三层（照仓库老规矩）
+
+- **形状**：停表落成 gate、确认的数作为 answer 落带、load(live=false) 不开卡 —— `dial.test.ts`
+  11 条（门 4、工具 4、演出 3），照 probe.test.ts 同形。
+- **价钱**：这一件不新增每帧的钱 —— 杆只在时钟停在这一格时挂着，和 quiz 卡同生命周期；
+  解释器那一头只多了一个 `case "dial"` 落到已有的 gate 分支里，cue 表、两本索引一格没动。
+- **护栏**：区间倒挂交换、空区间撑开、value 越界夹回、吞段的 tol 夹到半段；工具那头
+  min>=max / value 越界 / 非数字直接不落笔（回执不许替带子说话那条老规矩）。
+
+## 落地与实测
+
+`types.ts`（DialOp + Op 并集 + Gate.kind）、`guard.ts`（case "dial"，量级照 MAX_MS 那一套夹）、
+`compile.ts`（gate 分支与 headline 各加一个 kind）、`tools/director.ts`（动词 `tune` + 工具定义）、
+`agent/loop.ts`（settleGate 第三支，按距离判，archive 用 [他拨的, 正确的] 两项落一次）、
+`App.tsx`（DialCard：range + 读数 + 确认）、`index.css`（.dial 一族）、`agent/prompt.ts`
+（语法里加一条"要考量感时用 tune，别给选项"）、新测试 `engine/dial.test.ts`。
+
+tsc / build / oxlint（仍是那 2 条既有基线警告，0 新增）干净；vitest 全套 416 → 427 绿
+（唯一红的仍是 `compile.test.ts`"每题一答"那条按毫秒钉的已知 flaky，基线单跑同样红）。

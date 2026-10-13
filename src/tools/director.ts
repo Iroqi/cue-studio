@@ -331,6 +331,33 @@ export function directorTools(
         ops.push({ kind: "probe", prompt: S(args.prompt), targets, answer, why: args.why ? S(args.why) : undefined, concept: args.concept ? S(args.concept) : undefined });
         return { ops, result: `question queued; the clock stops and the learner taps one of ${targets.join("、")} on the board — tell them where to look, do NOT list text options.` };
       }
+      case "tune": {
+        // The third card: he drags a number out of a range. A range the learner cannot even drag the
+        // correct value inside is a broken card (like probe's "correct id not among targets"), and an
+        // inverted pair is a rod he cannot pull — the door would fix it, but a fix here is a receipt the
+        // director reads now, not a silent correction he builds the next beat on.
+        const min = N(args.min, NaN);
+        const max = N(args.max, NaN);
+        const value = N(args.value, NaN);
+        const finite = (x: number) => Number.isFinite(x);
+        if (!finite(min) || !finite(max) || !finite(value)) return nope("tune 需要 min/max/value 三个可读的数（他能在哪一段上拨、正确落在哪）。");
+        if (min >= max) return nope(`tune 的区间要 min < max（给的是 [${min}, ${max}]）。上下颠倒就先交换，别让他在一根倒着的杆上拨。`);
+        if (value < min || value > max) return nope(`tune 的正确值 ${value} 落在区间 [${min}, ${max}] 外 —— 他拨不到一个对的地方，这题是坏的。`);
+        const tol = Math.max(N(args.tol, 0), 0);
+        ops.push({
+          kind: "dial",
+          prompt: S(args.prompt),
+          min,
+          max,
+          value,
+          tol,
+          unit: args.unit ? S(args.unit) : undefined,
+          label: args.label ? S(args.label) : undefined,
+          why: args.why ? S(args.why) : undefined,
+          concept: args.concept ? S(args.concept) : undefined,
+        });
+        return { ops, result: `question queued; the clock stops and he drags a slider across [${min}, ${max}]${args.unit ? " " + S(args.unit) : ""} and confirms — his set value comes back as the answer, graded within ±${tol}${args.unit ? " " + S(args.unit) : ""}. Use this for estimation ("猜一下这个频率/角度/质量"), NOT for recognition.` };
+      }
       case "pause_for":
         ops.push({ kind: "pause-for", reason: S(args.reason) });
         return { ops, result: "stage clock will stop and wait for the learner" };
@@ -457,6 +484,7 @@ export function directorTools(
     },
     { name: "ask_learner", description: "Stop the clock and put a real question to the learner. Execution continues only after they answer; the tool result carries their choice, so you branch from it. A learner who types instead of choosing answers in their own words, and you are told that ungraded.", parameters: Type.Object({ prompt: str("the question"), options: Type.Array(str("at least 2 choices")), answer: num("index of the correct choice"), why: Type.Optional(str("said only after they answer")), concept: Type.Optional(str("the single idea this question probes, e.g. 分量只依赖终点。用同样措辞重复它，跨课的反复错过才认得出来")) }) },
     { name: "point_at", description: "Stop the clock and ask the learner to TAP the part on the board — the answer is a prop id, not a text option. Use this when the point is recognition of something already drawn (「which arrow is the resultant?」「which edge is the hypotenuse?」): the shapes are on stage, so let him point, do not copy them into a text card. Every target must already be standing. The clock stops; his tap lands on the tape as the answer and you branch from which id he chose.", parameters: Type.Object({ prompt: str("the question, e.g. 点一下：哪个是合力？"), targets: Type.Array(str("prop ids the learner may tap — 2..6, all currently on stage, include the correct one and the plausible distractors")), answer: str("the prop id that is correct (must be one of targets)"), why: Type.Optional(str("said only after they tap")), concept: Type.Optional(str("the single idea this probes, e.g. 合力是对角端点")) }) },
+    { name: "tune", description: "Stop the clock and ask the learner to DRAG a slider to estimate a continuous value — the answer is a NUMBER, graded by distance within tolerance, not a choice. Use this for estimation questions (「guess this frequency / angle / mass / speed before I tell you」), where the point is his intuitive estimate, not recognition: a quiz would make him pick a number you wrote, a probe would make him point at a shape. min<max and the correct value must sit inside the range. His confirmed value lands on the tape and you branch from how close he got.", parameters: Type.Object({ prompt: str("the question, e.g. 先凭直觉拨一下：这根弹簧大概的劲度系数是多少？"), min: num("lower bound of the slider, e.g. 0"), max: num("upper bound of the slider, e.g. 100"), value: num("the correct value, must be between min and max"), tol: Type.Optional(num("absolute tolerance: |his - value| <= tol counts as correct; default 0")), unit: Type.Optional(str("shown next to the readout, e.g. N/m, Hz, °, m/s")), label: Type.Optional(str("a short caption above the slider, e.g. 劲度系数")), why: Type.Optional(str("said only after he confirms")), concept: Type.Optional(str("the single idea this probes, e.g. 弹簧越硬 k 越大")) }) },
     { name: "pause_for", description: "Stop the clock until the learner presses continue. Use after a loaded idea, not after every sentence.", parameters: Type.Object({ reason: str("what the learner should do with this pause") }) },
     { name: "note_progress", description: "Record teaching state (concepts genuinely covered, learner condition). This is written into the system prompt sections, so history stays cache-stable. Call it whenever a concept is actually understood.", parameters: Type.Object({ concepts_covered: Type.Optional(Type.Array(str("short concept names"))), learner_state: Type.Optional(str("one line: where the learner is now")), beats_advanced: Type.Optional(num("how many beats of the plan this turn completed")) }) },
     { name: "stage_state", description: "Read the current stage: clock, camera, scenes, live props with geometry, open questions.", parameters: Type.Object({}) },

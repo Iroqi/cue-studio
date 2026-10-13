@@ -751,6 +751,43 @@ export class Teacher {
         .join("\n");
     }
 
+    if (op.kind === "dial") {
+      // The answer is the number he confirmed on the slider. If he instead typed free text in the
+      // console, there is nothing continuous to grade — treat it like a free-text quiz answer.
+      const his = Number(answer);
+      if (!Number.isFinite(his))
+        return `学习者没有拨杆，直接说了：「${answer}」。这就是他现在的理解，从它出发继续演；不要替他宣布对错，也别把这句话当成拨对了。`;
+      const unit = op.unit ?? "";
+      const fmt = (x: number) => `${Number.isInteger(x) ? x : x.toFixed(2)}${unit ? " " + unit : ""}`;
+      const correct = Math.abs(his - op.value) <= op.tol + 1e-9;
+      const prior = missesOn(this.teaching.title, op.concept);
+      archiveAttempt({
+        at: Date.now(),
+        topic: this.teaching.title,
+        prompt: op.prompt,
+        options: [fmt(his), fmt(op.value)],
+        choice: 0,
+        answer: 1,
+        correct,
+        concept: op.concept,
+      });
+      const here = op.concept ? `「${op.concept}」这一处` : "这一处";
+      const off = correct ? "" : ` 他拨在 ${fmt(his)}，离正确的 ${fmt(op.value)} 差 ${fmt(Math.abs(his - op.value))}。`;
+      return [
+        `学习者拨到 ${fmt(his)}。${correct ? "在容差内，拨对了。" : `没在容差 ${op.tol}${unit ? " " + unit : ""} 内。`}${off}`,
+        op.why ? `你当初给这道题的理由：${op.why}` : "",
+        correct
+          ? prior > 0
+            ? `${here}他以前估错过 ${prior} 次，这次估到了：可以往前走，但别当成他天生有这个量感。`
+            : "这次估得准，是证据，可以往前走。别把它当成整个概念已经讲通。"
+          : prior > 0
+            ? `${here}他已经是第 ${prior + 1} 次估偏。再让他拨一次没有意义：换个载体把这个量级演出来（motion 让它自己扫过、把刻度和那件实物并置），再用同样的 concept 让他拨一次。`
+            : `他的量感偏了 ${fmt(Math.abs(his - op.value))}。别直接把正确值报给他念一遍：把这根杆留在台上，把一件能对照的实物摆到同一位置，让他自己再拨一次对齐。`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    }
+
     const quiz = op;
     const choice = quiz.options.indexOf(answer);
     // Free text is not a graded choice: it is evidence of how he put it, and nothing more.

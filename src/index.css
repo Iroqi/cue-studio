@@ -545,6 +545,53 @@ button.x {
   color: var(--cy);
 }
 
+/* A dial card: he drags a number instead of reading options or tapping a shape. */
+.dial {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+}
+
+.dial-label {
+  font-size: 13px;
+  color: rgba(232, 230, 240, 0.6);
+  letter-spacing: 0.04em;
+}
+
+.dial-readout {
+  font-size: 30px;
+  font-weight: 600;
+  color: var(--cy);
+  font-variant-numeric: tabular-nums;
+}
+
+.dial input[type="range"] {
+  width: min(440px, 70vw);
+  accent-color: var(--cy);
+}
+
+.dial-ends {
+  width: min(440px, 70vw);
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: rgba(232, 230, 240, 0.5);
+  font-variant-numeric: tabular-nums;
+}
+
+.dial button {
+  margin-top: 4px;
+  padding: 10px 22px;
+  font-size: 15px;
+  border-radius: 11px;
+  background: #171327;
+}
+
+.dial button:hover {
+  border-color: var(--cy);
+  color: var(--cy);
+}
+
 /* ── the dock: beat rail + composer, floating at the foot of the board ── */
 .marquee {
   position: absolute;
