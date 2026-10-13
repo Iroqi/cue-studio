@@ -3,7 +3,7 @@ import { Stage } from "./engine/runtime";
 import { Narrator } from "./engine/narrator";
 import { decodeTape, encodeTape } from "./engine/share";
 import { StageView } from "./engine/StageView";
-import { Teacher } from "./agent/loop";
+import { Teacher, ESC_RETRY, ESC_SKIP } from "./agent/loop";
 import { asideScore, continuationScore, paintScript, rehearsalScore } from "./agent/rehearsal";
 import { ModelConfig } from "./ui/ModelConfig";
 import { BeatRail } from "./ui/BeatRail";
@@ -19,13 +19,32 @@ type Tab = "log" | "config" | "archive";
 
 const SAMPLES = ["向量加法与力的分解", "梯度下降为什么会往下走", "复数乘法就是旋转", "极限：越靠近不等于已经到了"];
 
+/** 逃生舱口：他不会 / 想跳过时，按钮落带的是约定短语，回执走中性态 —— 不挂答对、也不挂答错的色。 */
+const ESC_NOTES: Record<string, string> = {
+  [ESC_RETRY]: "好，不硬答 —— 这一拍会换个讲法",
+  [ESC_SKIP]: "好，这道先跳过 —— 接着往下讲",
+};
+
+function EscapeRow({ onEscape }: { onEscape: (phrase: string) => void }) {
+  return (
+    <div className="escape-row">
+      <button onClick={() => onEscape(ESC_RETRY)} title="把这句话落到带上：导演会换个讲法，不判分">
+        我不会 · 换个讲法
+      </button>
+      <button onClick={() => onEscape(ESC_SKIP)} title="把这句话落到带上：导演尊重这个选择，继续往下讲">
+        这道先跳过
+      </button>
+    </div>
+  );
+}
+
 /**
  * 第三张卡：一根杆。他拨一个数，按下确认，那个数作为 answer 落带 —— 判分在导演那一头（settleGate），
  * 这一头只算一句即时的对错给个回执，不替带子说话。杆是舞台自己渲染的原生 range，不是模型交的 markup，
  * 所以 DOMPurify 那道信任边界一个字都不用动。状态只活在这张卡上：回放（live=false）根本不挂这张卡，
  * 他拨的那一下本来就不进带子，进带子的只有确认那一刻的那个数。
  */
-function DialCard({ op, stage, onDone }: { op: DialOp; stage: Stage; onDone: (ok: boolean, text: string) => void }) {
+function DialCard({ op, stage, onDone, onEscape }: { op: DialOp; stage: Stage; onDone: (ok: boolean | null, text: string) => void; onEscape: (phrase: string) => void }) {
   const mid = (op.min + op.max) / 2;
   const [v, setV] = useState(mid);
   const fmt = (x: number) => `${Number.isInteger(x) ? x : x.toFixed(2)}${op.unit ? " " + op.unit : ""}`;
@@ -53,6 +72,7 @@ function DialCard({ op, stage, onDone }: { op: DialOp; stage: Stage; onDone: (ok
           <span>{fmt(op.max)}</span>
         </div>
         <button onClick={confirm}>定下这个值</button>
+        <EscapeRow onEscape={onEscape} />
       </div>
     </>
   );
@@ -63,7 +83,7 @@ function DialCard({ op, stage, onDone }: { op: DialOp; stage: Stage; onDone: (ok
  * （settleGate 查该出现的词出现了没），这一头只把他写的话送上去。和 DialCard 同形：状态只活在这张卡上，
  * 回放不挂这张卡，他写了什么读的是带上的 answer。
  */
-function TypeCard({ op, stage, onDone }: { op: TypeOp; stage: Stage; onDone: (ok: boolean, text: string) => void }) {
+function TypeCard({ op, stage, onDone, onEscape }: { op: TypeOp; stage: Stage; onDone: (ok: boolean | null, text: string) => void; onEscape: (phrase: string) => void }) {
   const [text, setText] = useState("");
   const submit = () => {
     const say = text.trim();
@@ -86,6 +106,7 @@ function TypeCard({ op, stage, onDone }: { op: TypeOp; stage: Stage; onDone: (ok
           onKeyDown={(e) => e.key === "Enter" && submit()}
         />
         <button onClick={submit} disabled={!text.trim()}>写下这句话</button>
+        <EscapeRow onEscape={onEscape} />
       </div>
     </>
   );
@@ -110,7 +131,7 @@ export default function App() {
   const [cfg, setCfg] = useState<LlmConfig>(() => loadConfig());
   const [tab, setTab] = useState<Tab>("log");
   const [status, setStatus] = useState("给一个题目，舞台就开始排演。");
-  const [verdict, setVerdict] = useState<{ ok: boolean; text: string } | null>(null);
+  const [verdict, setVerdict] = useState<{ ok: boolean | null; text: string } | null>(null);
   const [usage, setUsage] = useState({ input: 0, output: 0, cost: 0, calls: 0 });
   const [entry, setEntry] = useState("");
   const [topic, setTopic] = useState("");
@@ -286,6 +307,11 @@ export default function App() {
   const isProbe = gate?.kind === "probe";
   const isDial = gate?.kind === "dial";
   const isType = gate?.kind === "type";
+  /** 逃生舱口：按钮落带约定短语，回执走中性态（不挂答对/答错的色）—— 判分仍只由 settleGate 那一头说了算。 */
+  const escapeGate = (phrase: string) => {
+    stage.answerGate(phrase);
+    setVerdict({ ok: null, text: ESC_NOTES[phrase] ?? "好，按你说的来。" });
+  };
   // A tap on a board part closes the open probe: only the id goes to the stage, the loop grades it.
   const handlePick = (id: string) => {
     const g = snap.gate;
@@ -412,9 +438,9 @@ export default function App() {
           <div className="gate">
             <div className="gate-card">
               {isType ? (
-                <TypeCard op={gate.op as TypeOp} stage={stage} onDone={(ok, text) => setVerdict({ ok, text })} />
+                <TypeCard op={gate.op as TypeOp} stage={stage} onDone={(ok, text) => setVerdict({ ok, text })} onEscape={escapeGate} />
               ) : isDial ? (
-                <DialCard op={gate.op as DialOp} stage={stage} onDone={(ok, text) => setVerdict({ ok, text })} />
+                <DialCard op={gate.op as DialOp} stage={stage} onDone={(ok, text) => setVerdict({ ok, text })} onEscape={escapeGate} />
               ) : isQuiz ? (
                 <>
                   <p>{(gate.op as { prompt: string }).prompt}</p>
@@ -436,6 +462,7 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+                  <EscapeRow onEscape={escapeGate} />
                 </>
               ) : (
                 <>
@@ -451,9 +478,10 @@ export default function App() {
           <div className="probe-hint">
             <p>{(gate.op as { prompt: string }).prompt}</p>
             <span>直接在舞台上点一下你说的那个图形</span>
+            <EscapeRow onEscape={escapeGate} />
           </div>
         )}
-        {verdict && <div className={"verdict" + (verdict.ok ? " ok" : " miss")}>{verdict.text}</div>}
+        {verdict && <div className={"verdict" + (verdict.ok === true ? " ok" : verdict.ok === false ? " miss" : "")}>{verdict.text}</div>}
 
         {/* His own words, on the tape: a replayed or shared lesson shows the dialogue, not just the lecture. */}
         {!gate && snap.said && <div className="echo">他当时答的是「{snap.said}」</div>}

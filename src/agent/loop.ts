@@ -33,6 +33,15 @@ const PAINT_CONCURRENCY = 3;
 /** A reasoning model can spend its whole output budget on thinking and stop mid-thought. Twice it gets told to commit to verbs. */
 const TRUNCATED_MAX = 2;
 
+/**
+ * 逃生舱口（Intelligent UI 的 escape hatches / trust the user）。停在卡上的学习者只有"答"一个出口，
+ * 于是"我不会"打在 console 里也会被当成一句答错的答案 —— type 卡甚至当场判他"缺了哪个词"。
+ * 这两句是约定的**求救与选择**，`settleGate` 先认它们再谈判分：不进档案、不算错过、判分一个字不碰，
+ * 回执只告诉导演他怎么了，怎么演由导演接。
+ */
+export const ESC_RETRY = "我不会";
+export const ESC_SKIP = "跳过这道";
+
 /** Anything the stage can act on: a verb to run, or a line to put on the clock. */
 function hasStageable(m: AssistantMessage): boolean {
   return m.content.some((c) => c.type === "toolCall" || (c.type === "text" && c.text.trim().length > 0));
@@ -717,6 +726,23 @@ export class Teacher {
   private settleGate(seq: number, answer: string): string {
     const op = this.stage.compiled.gates.find((g) => g.seq === seq)?.op;
     if (!op || op.kind === "pause-for") return `学习者回答：${answer}`;
+    // 逃生舱口：他说「我不会」/「跳过这道」不是答错，是他的求救与选择。这两句不判分、不进档案、
+    // 不算错过 —— 回执只告诉导演他怎么了。判断必须放在每一张卡的分支**之前**：放后面 quiz 那一头
+    // 会先把他这句当"没选选项"、type 那一头会先判他"缺了哪个词"，求救就又被读成了答错。
+    if (answer === ESC_RETRY)
+      return [
+        `学习者在这张卡上说了「我不会」。这不是答错，是求救信号：别判分，也别把正确答案念一遍。`,
+        op.concept
+          ? `换一种载体把「${op.concept}」再演一次（motion 让它自己走、换一组对得上的数字、把两件东西并置），演完用同样的 concept 再问一次。`
+          : `换一种载体把这一处再演一次（motion 让它自己走、换一组对得上的数字、把两件东西并置），演完再问一次。`,
+      ].join("\n");
+    if (answer === ESC_SKIP)
+      return [
+        `学习者在这张卡上选了「跳过这道」。这不是答错，是他的选择：别判分。`,
+        op.concept
+          ? `尊重它继续往下讲；若你觉得这一处还没到，把「${op.concept}」记进 note_progress 还没掌握，换个更简单的问法稍后再回来。`
+          : `尊重它继续往下讲；若你觉得这一处还没到，把它记进 note_progress 还没掌握，稍后再回来。`,
+      ].join("\n");
     /** A prop id back to the name the director gave it, for a line he can actually read. */
     const label = (id: string) => this.stage.compiled.props.get(id)?.revisions.at(-1)?.label ?? id;
 

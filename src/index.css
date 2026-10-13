@@ -362,6 +362,37 @@ button.x {
   color: var(--cy);
 }
 
+/* The escape hatch: two quiet doors under every card — "I can't" is a plea, "skip this" is a choice,
+ * neither is graded. The probe hint is pointer-events:none (it must not block the shapes), so the
+ * buttons re-enable events for themselves. */
+.escape-row {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.probe-hint .escape-row {
+  margin-top: 8px;
+  pointer-events: auto;
+}
+
+.escape-row button {
+  font-size: 12px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: transparent;
+  border-color: rgba(232, 230, 240, 0.28);
+  color: var(--mg);
+  opacity: 0.85;
+}
+
+.escape-row button:hover {
+  border-color: var(--mg);
+  color: var(--mg);
+  opacity: 1;
+}
+
 @keyframes pulse {
   50% {
     filter: drop-shadow(0 0 18px var(--cy));
