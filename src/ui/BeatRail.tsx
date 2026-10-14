@@ -3,34 +3,13 @@ import type { ReactElement, RefObject } from "react";
 import type { Stage } from "../engine/runtime";
 import type { Beat } from "../engine/types";
 import type { Teacher } from "../agent/loop";
+import { beatAt } from "./score";
 import { segsFor, nowStore, countBoxed, type SegView } from "./segs";
 
 interface Props {
   stage: Stage;
   teacher: Teacher | null;
   t: number;
-}
-
-/**
- * The clock stands in exactly one beat. Beats are laid down in `start` order, so finding it is a
- * binary search — which is what lets the rail skip re-rendering on a tick that changed nothing.
- * `Math.max(end, start + 1)` mirrors the segment's own half-open window, so the tail beat of a tape
- * whose end was never closed counts as standing-in it, and a clock past the last window counts as in none.
- */
-function beatAt(beats: Beat[], t: number): number {
-  let lo = 0;
-  let hi = beats.length - 1;
-  let found = -1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (beats[mid].start <= t) {
-      found = mid;
-      lo = mid + 1;
-    } else hi = mid - 1;
-  }
-  if (found < 0) return -1;
-  const b = beats[found];
-  return t < Math.max(b.end, b.start + 1) ? found : -1;
 }
 
 /**

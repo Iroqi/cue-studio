@@ -7,6 +7,7 @@ import { Teacher, ESC_RETRY, ESC_SKIP } from "./agent/loop";
 import { asideScore, continuationScore, paintScript, rehearsalScore } from "./agent/rehearsal";
 import { ModelConfig } from "./ui/ModelConfig";
 import { BeatRail } from "./ui/BeatRail";
+import { beatAt, scoreOf } from "./ui/score";
 import { LearnerArchive } from "./ui/LearnerArchive";
 import { rowsFor } from "./ui/rows";
 import { LogRows } from "./ui/LogRows";
@@ -126,6 +127,9 @@ export default function App() {
   const compiled = stage.compiled;
   const tape = stage.log.tape;
   const logRows = useMemo(() => rowsFor(compiled, tape), [compiled, tape]);
+  /** 这一场的账：只随带子换（compiled 换引用才重算），时钟走帧不碰它。 */
+  const score = useMemo(() => scoreOf(compiled), [compiled]);
+  const currentBeat = beatAt(compiled.beats, snap.t);
   const narrator = useMemo(() => new Narrator(stage), [stage]);
   const [voiced, setVoiced] = useState(() => narrator.enabled);
   const [cfg, setCfg] = useState<LlmConfig>(() => loadConfig());
@@ -488,6 +492,29 @@ export default function App() {
 
         <div className="console" ref={dockRef}>
           <div className="console-inner">
+            {/* 这一场的账：Intelligent UI 的 show your work / progress / cost —— 拍数与花销不藏抽屉。
+                带子上已有的东西，亮出来就是新功能；判分只照 settleGate 那条线（scoreOf 里那一刀）。 */}
+            <div className="score">
+              <span className="score-where">
+                {score.beats === 0
+                  ? "还没开演"
+                  : currentBeat < 0
+                    ? "演完了"
+                    : `第 ${currentBeat + 1}/${score.beats} 拍 · ${(compiled.beats[currentBeat].headline || "无声调度").slice(0, 22)}`}
+              </span>
+              {score.asking > 0 && (
+                <span className="score-account">
+                  问 {score.asking} · 对 {score.correct} · 错 {score.wrong} · 跳过 {score.escaped}
+                  {score.open > 0 ? ` · 还开着 ${score.open}` : ""}
+                </span>
+              )}
+              {usage.calls > 0 && (
+                <span className="score-cost">
+                  {usage.calls} 次调用 · {usage.input + usage.output} tokens
+                  {usage.cost ? ` · $${usage.cost.toFixed(4)}` : ""}
+                </span>
+              )}
+            </div>
             {railOpen && <BeatRail stage={stage} teacher={teacherRef.current} t={snap.t} />}
             <div className="composer">
               <input

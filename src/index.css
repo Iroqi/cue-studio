@@ -821,6 +821,37 @@ button.x {
   white-space: nowrap;
 }
 
+/* 这一场的账：常驻的细条，不藏抽屉。左段是拍到哪（progress），中段是问/对/错/跳过
+   （show your work），右段是 tokens 与钱（cost）—— 交互不付费是设计，看见了才算数。 */
+.score {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  padding: 0 4px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(138, 134, 163, 0.86);
+  overflow: hidden;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.score-where {
+  color: rgba(228, 226, 244, 0.94);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.score-account,
+.score-cost {
+  flex: none;
+}
+
+.score-account {
+  color: rgba(178, 200, 190, 0.92);
+}
+
 /* the drawer: log / model / archive, floating over the board instead of eating it */
 .drawer {
   position: absolute;
