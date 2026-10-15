@@ -855,6 +855,45 @@ export class Teacher {
         .join("\n");
     }
 
+    if (op.kind === "drag") {
+      // The fifth card: he moved a prop on the board to a place. The answer is the position he
+      // confirmed ("x,y", world units of the prop's centre), graded by Euclidean distance. If he
+      // instead typed free text in the console, there is nothing continuous to grade — treat it like
+      // a free-text quiz answer.
+      const m = /^\s*([-+]?\d+(?:\.\d+)?)\s*,\s*([-+]?\d+(?:\.\d+)?)\s*$/.exec(answer);
+      if (!m)
+        return `学习者没有搬动台上的「${label(op.prop)}」，直接说了：「${answer}」。这就是他现在的理解，从它出发继续演；不要替他宣布对错，也别把这句话当成搬对了。`;
+      const his = { x: Number(m[1]), y: Number(m[2]) };
+      const fmt = (p: { x: number; y: number }) => `(${Math.round(p.x)}, ${Math.round(p.y)})`;
+      const dist = Math.hypot(his.x - op.value.x, his.y - op.value.y);
+      const correct = dist <= op.tol + 1e-9;
+      const prior = missesOn(this.teaching.title, op.concept);
+      archiveAttempt({
+        at: Date.now(),
+        topic: this.teaching.title,
+        prompt: op.prompt,
+        options: [fmt(his), fmt(op.value)],
+        choice: 0,
+        answer: 1,
+        correct,
+        concept: op.concept,
+      });
+      const here = op.concept ? `「${op.concept}」这一处` : "这一处";
+      return [
+        `学习者把「${label(op.prop)}」放到了 ${fmt(his)}。${correct ? "在容差内，放对了。" : `没在容差 ${op.tol} 世界单位内。`}${correct ? "" : ` 离目标 ${fmt(op.value)} 差 ${Math.round(dist)} 世界单位。`}`,
+        op.why ? `你当初给这道题的理由：${op.why}` : "",
+        correct
+          ? prior > 0
+            ? `${here}他以前放过 ${prior} 次，这次放对了：可以往前走，但别当成他天生会亲手摆。`
+            : "这一放是证据，可以往前走。别把它当成整个概念已经讲通。"
+          : prior > 0
+            ? `${here}他已经是第 ${prior + 1} 次放偏。再让他搬一次没有意义：换个载体把目标位置标出来（画一个目标标记、或把正确的那件搬到目标位置给他看），再用同样的 concept 让他放一次。`
+            : `他放的位置离该在的位置差了 ${Math.round(dist)}。别直接把正确位置念给他听：把他放的地方和目标位置并置在台上（把道具 move 过去、或画一个目标标记），让他自己再搬一次对齐。`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    }
+
     const quiz = op;
     const choice = quiz.options.indexOf(answer);
     // Free text is not a graded choice: it is evidence of how he put it, and nothing more.

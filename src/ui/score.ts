@@ -1,4 +1,4 @@
-import type { Beat, Compiled, DialOp, ProbeOp, QuizOp, TypeOp } from "../engine/types";
+import type { Beat, Compiled, DialOp, DragOp, ProbeOp, QuizOp, TypeOp } from "../engine/types";
 import { ESC_RETRY, ESC_SKIP } from "../agent/loop";
 
 /**
@@ -32,12 +32,12 @@ export function beatAt(beats: Beat[], t: number): number {
  *  - `pause-for` 不算题（那是"继续"的门，不是考题）；
  *  - 逃生句（`ESC_RETRY`/`ESC_SKIP`）单开一本账，不算错 —— 求救不是答错；
  *  - 自由文本不算错（quiz"没选选项直接说了"、probe"没有点台上的图形"、dial"没有拨杆"、
- *    type"这张卡没有定要出现的词"都落进"没判分"，不是"答错"）。
+ *    drag"没有搬动台上的图形"、type"这张卡没有定要出现的词"都落进"没判分"，不是"答错"）。
  * 孤儿 answer（`gate` 指不到任何一张卡）自然不在这本账上：账只从 `gates` 读。
  */
 export interface Score {
   beats: number;
-  /** 问了几道（quiz / probe / dial / type；pause-for 不算题）。 */
+  /** 问了几道（quiz / probe / dial / type / drag；pause-for 不算题）。 */
   asking: number;
   /** 还开着的卡（`said === null`）。 */
   open: number;
@@ -77,6 +77,10 @@ export function scoreOf(compiled: Compiled): Score {
       const op = g.op as DialOp;
       const his = Number(said);
       ok = Number.isFinite(his) ? Math.abs(his - op.value) <= op.tol + 1e-9 : null;
+    } else if (g.kind === "drag") {
+      const op = g.op as DragOp;
+      const m = /^\s*([-+]?\d+(?:\.\d+)?)\s*,\s*([-+]?\d+(?:\.\d+)?)\s*$/.exec(said);
+      ok = m ? Math.hypot(Number(m[1]) - op.value.x, Number(m[2]) - op.value.y) <= op.tol + 1e-9 : null;
     } else {
       const op = g.op as TypeOp;
       const need = op.accept.map((w) => w.toLowerCase());

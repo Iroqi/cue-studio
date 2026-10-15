@@ -67,6 +67,12 @@ const MAX_MS = 120_000;
 const MAX_COORD = 200_000;
 const MAX_EXTENT = 40_000;
 
+/**
+ * How far a "move the prop here" card may call "close enough". One frame is ~1600 wide, so this spans
+ * well past a whole screen — beyond that, every placement is correct and the card stops being a card.
+ */
+const MAX_TOL = 2000;
+
 /** Names and lines: a tape is a record of a lesson, not a file to be smuggled through one field. */
 const MAX_NAME = 120;
 const MAX_TEXT = 2000;
@@ -624,6 +630,40 @@ export function guardOp(op: Op, notes?: (n: string) => void): Op {
         accept,
         ...(op.avoid !== undefined ? { avoid: avoid ?? [] } : {}),
         ...(op.placeholder !== undefined ? { placeholder } : {}),
+        ...(op.why !== undefined ? { why } : {}),
+        ...(op.concept !== undefined ? { concept } : {}),
+      });
+    }
+    case "drag": {
+      // The fifth card: he moves a prop on the board to a place. The door only knows the op itself,
+      // not what is standing — it clamps the target centre into the world and caps the tolerance the
+      // same way it clamps dial's range. Which named prop is actually on stage is the director tool's
+      // check, exactly like probe's targets.
+      const prompt = line(op.prompt);
+      trunc("prompt", op.prompt, prompt, MAX_TEXT);
+      const prop = name(op.prop);
+      trunc("prop", op.prop, prop, MAX_NAME);
+      const coord = (v: unknown) => (isNum(v) ? Math.min(Math.max(v, -MAX_COORD), MAX_COORD) : 0);
+      const raw = (op.value && typeof op.value === "object" ? op.value : {}) as { x?: unknown; y?: unknown };
+      const x = coord(raw.x);
+      const y = coord(raw.y);
+      const coordNote = (field: string, given: unknown, out: number) => {
+        if (notes && given !== undefined && (!isNum(given) || out !== given)) notes(`${field} 不可读或越界，夹回 ${out}`);
+      };
+      coordNote("drag.value.x", raw.x, x);
+      coordNote("drag.value.y", raw.y, y);
+      let tol = isNum(op.tol) && op.tol >= 0 ? op.tol : 0;
+      if (tol > MAX_TOL) tol = MAX_TOL;
+      const why = op.why === undefined ? undefined : line(op.why);
+      const concept = op.concept === undefined ? undefined : name(op.concept);
+      numNote("tol", op.tol, tol, " 世界单位");
+      trunc("why", op.why, why ?? "", MAX_TEXT);
+      trunc("concept", op.concept, concept ?? "", MAX_NAME);
+      return revise(op, {
+        prompt,
+        prop,
+        value: { x, y },
+        tol,
         ...(op.why !== undefined ? { why } : {}),
         ...(op.concept !== undefined ? { concept } : {}),
       });

@@ -316,10 +316,77 @@ button.x {
  * A live probe turns its named props into tappable parts. The ring is the affordance: without it the
  * learner has no way to know which shapes accept a tap. It pulses in the same blue as the camera, so
  * it reads as "this is a target" rather than as a highlight the director laid.
+ *
+ * A live `drag` turns its named prop into a MOVABLE part — the same affordance language (the ring says
+ * "this one is yours to act on"), but the cursor is a grab hand, not a pointer, and touch drags must
+ * not scroll the page behind it.
  */
+.prop.pickable,
+.prop.movable {
+  animation: pick-ring 1.1s ease-in-out infinite;
+}
+
 .prop.pickable {
   cursor: pointer;
-  animation: pick-ring 1.1s ease-in-out infinite;
+}
+
+.prop.movable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.prop.movable:active {
+  cursor: grabbing;
+}
+
+/* He let go of the prop but has not confirmed yet: a chip up top (the hint banner is pointer-events:
+ * none so the stage stays reachable; the chip re-enables events for its own buttons) that asks
+ * 「就是这里？」 — confirming lands the position on the tape, 「还原」 returns the prop to its anchor. */
+.drag-chip {
+  position: absolute;
+  top: 76px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  background: rgba(16, 13, 27, 0.92);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(125, 211, 252, 0.45);
+  border-radius: 14px;
+  padding: 8px 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.drag-chip span {
+  font-size: 14px;
+  color: #e8e6f0;
+  white-space: nowrap;
+}
+
+.drag-chip-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.drag-chip-actions button {
+  font-size: 13px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid rgba(125, 211, 252, 0.45);
+  color: var(--cy);
+  cursor: pointer;
+}
+
+.drag-chip-actions button:hover {
+  background: rgba(125, 211, 252, 0.12);
+}
+
+.drag-chip-actions button:last-child {
+  border-color: rgba(232, 230, 240, 0.28);
+  color: var(--mg);
 }
 
 @keyframes pick-ring {

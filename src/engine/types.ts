@@ -282,6 +282,34 @@ export interface TypeOp {
 }
 
 /**
+ * 一张"搬动"卡：和 quiz / probe / dial / type 同一张停表的卡，但学习者不读文字、不点现成形状、不拨一根
+ * 杆、不打字 —— 他**亲手把台上的一件道具搬到某个位置**，落带的答案是他放下并确认的那个位置。
+ *
+ * Intelligent UI（OpenAI，2026-10）的界面元素清单里有一类是 charts / editable charts —— 能上手直接
+ * 操纵的交互图，不只是可点选的部件（probe）或可拨的参数（dial）。这台仓库的媒介本来就是一块无界的板：
+ * 问"把箭头 b 的头接到箭头 a 的头上""把这块石头滚到谷底"—— 选项、指物、拨数、打字都考不到"他会不会
+ * 亲手做这件事"。`drag` 于是把答案从卡里搬回台上：时钟停住时，被点名的道具自己变成可搬的，他把它
+ * 拖到目标位置、确认，**他确认的那一刻那个位置**作为一句 `answer` 落在带上（文本形如 "x,y"，世界单位、
+ * 四舍五入到整数，指的是道具**中心**的位置）。
+ *
+ * 搬动过程中的位置是学习者状态，**不进带子** —— 和 3D `interactive` 的拖动角度是同一句（README 已知
+ * 边界）；确认落带后，道具回到它的锚点（带子上唯一的位置），重放时它从头到尾没有动过。判分按距离：
+ * `|他放的位置 - value| <= tol` 算对。
+ */
+export interface DragOp {
+  kind: "drag";
+  prompt: string;
+  /** The prop he must move on the board — must be standing (on stage, not swept) when this lands. */
+  prop: string;
+  /** The target CENTRE position in world units — where his prop's centre should end up. */
+  value: { x: number; y: number };
+  /** Absolute tolerance in world units: distance(centre, value) <= tol counts as correct. 0 means "exactly". */
+  tol: number;
+  why?: string;
+  concept?: string;
+}
+
+/**
  * What the learner actually said, laid on the tape by the stage at the moment he says it.
  *
  * He is the only participant in a lesson whose words used to live outside it: the answer went into a
@@ -313,6 +341,7 @@ export type Op =
   | ProbeOp
   | DialOp
   | TypeOp
+  | DragOp
   | PauseOp
   | AnswerOp;
 
@@ -420,8 +449,8 @@ export interface Cue {
 export interface Gate {
   t: number;
   seq: number;
-  kind: "quiz" | "pause-for" | "probe" | "dial" | "type";
-  op: QuizOp | ProbeOp | DialOp | TypeOp | PauseOp;
+  kind: "quiz" | "pause-for" | "probe" | "dial" | "type" | "drag";
+  op: QuizOp | ProbeOp | DialOp | TypeOp | DragOp | PauseOp;
   /** What the learner actually said for this card, read off the tape; null while it is still an open question. */
   said: string | null;
   /** End of the beat that asked it. His words belong to that beat: shown while the playhead is inside it, and nothing after. */

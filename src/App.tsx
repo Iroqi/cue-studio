@@ -12,7 +12,7 @@ import { LearnerArchive } from "./ui/LearnerArchive";
 import { rowsFor } from "./ui/rows";
 import { LogRows } from "./ui/LogRows";
 import { getModels, loadConfig, saveConfig, setScriptedResponses, type LlmConfig } from "./llm/llm";
-import type { DialOp, OpEntry, TypeOp } from "./engine/types";
+import type { DialOp, DragOp, OpEntry, TypeOp } from "./engine/types";
 
 const RATES = [0.5, 1, 2, 4];
 
@@ -311,6 +311,9 @@ export default function App() {
   const isProbe = gate?.kind === "probe";
   const isDial = gate?.kind === "dial";
   const isType = gate?.kind === "type";
+  const isDrag = gate?.kind === "drag";
+  // The banner names the prop the learner must move — his label, not the id he never sees.
+  const dragLabel = isDrag ? (compiled.props.get((gate.op as DragOp).prop)?.revisions.at(-1)?.label ?? (gate.op as DragOp).prop) : "";
   /** 逃生舱口：按钮落带约定短语，回执走中性态（不挂答对/答错的色）—— 判分仍只由 settleGate 那一头说了算。 */
   const escapeGate = (phrase: string) => {
     stage.answerGate(phrase);
@@ -323,6 +326,16 @@ export default function App() {
     const right = id === (g.op as { answer: string }).answer;
     stage.answerGate(id);
     setVerdict({ ok: right, text: right ? "点对了" : "点错了 —— 接下来这一拍会演出为什么" });
+  };
+  // A confirmed placement on the board closes the open drag card: only the position goes to the stage,
+  // the loop grades it by distance. The prop returns to its anchor — the tape holds only his answer.
+  const handleDragAnswer = (x: number, y: number) => {
+    const g = snap.gate;
+    if (!g || g.kind !== "drag") return;
+    const op = g.op as DragOp;
+    const right = Math.hypot(x - op.value.x, y - op.value.y) <= op.tol + 1e-9;
+    stage.answerGate(`${x},${y}`);
+    setVerdict({ ok: right, text: right ? "放对了" : "放偏了 —— 接下来这一拍会演出为什么" });
   };
   // The light follows the playhead, not the ownership: looking back at your own lesson dims it, and the lesson is still yours.
   const liveTail = snap.following;
@@ -343,7 +356,7 @@ export default function App() {
   return (
     <div className={"app" + (drawer ? " open" : "")} style={{ "--dock": `${dockH}px` } as CSSProperties}>
       <main>
-        <StageView stage={stage} bottomInset={dockH} onPick={handlePick} />
+        <StageView stage={stage} bottomInset={dockH} onPick={handlePick} onDragAnswer={handleDragAnswer} />
         <input
           className="timeline"
           type="range"
@@ -438,7 +451,7 @@ export default function App() {
           </div>
         )}
 
-        {gate && !isProbe && (
+        {gate && !isProbe && !isDrag && (
           <div className="gate">
             <div className="gate-card">
               {isType ? (
@@ -482,6 +495,16 @@ export default function App() {
           <div className="probe-hint">
             <p>{(gate.op as { prompt: string }).prompt}</p>
             <span>直接在舞台上点一下你说的那个图形</span>
+            <EscapeRow onEscape={escapeGate} />
+          </div>
+        )}
+        {/* A drag card asks the learner to MOVE the part on the board — same no-blocking-card rule: the
+            card would sit on top of the very prop he must grab. A nudge up high, and the confirm chip
+            (in StageView) appears where he lets go. */}
+        {isDrag && gate && (
+          <div className="probe-hint">
+            <p>{(gate.op as { prompt: string }).prompt}</p>
+            <span>在舞台上把「{dragLabel}」直接拖到目标位置，松手后点「就是这里」</span>
             <EscapeRow onEscape={escapeGate} />
           </div>
         )}

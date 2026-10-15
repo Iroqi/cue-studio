@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import DOMPurify from "dompurify";
 import katex from "katex";
 import type { Stage, VisibleProp } from "./runtime";
+import type { DragOp } from "./types";
 import { Scene3D } from "./Scene3D";
 
 /**
@@ -201,7 +202,23 @@ function hydrateMath(root: ShadowRoot) {
   }
 }
 
-function PropView({ p, t, pickable = false, onPick }: { p: VisibleProp; t: number; pickable?: boolean; onPick?: (id: string) => void }) {
+function PropView({
+  p,
+  t,
+  pickable = false,
+  movable = false,
+  offset = null,
+  onPick,
+}: {
+  p: VisibleProp;
+  t: number;
+  pickable?: boolean;
+  /** A live `drag` card makes its named prop movable: the learner moves it on the board, not a card. */
+  movable?: boolean;
+  /** Where the learner has moved it, in world units — learner state, never part of the tape. */
+  offset?: { dx: number; dy: number } | null;
+  onPick?: (id: string) => void;
+}) {
   const ref = useRef<HTMLDivElement | null>(null);
   const signature = `${p.svg}|${p.html}|${p.css}`;
 
@@ -251,10 +268,16 @@ function PropView({ p, t, pickable = false, onPick }: { p: VisibleProp; t: numbe
     hydrateMath(root);
   }, [signature, p.svg, p.html, p.css, p.box.w, p.box.h, p.scene3d]);
 
-  const style = { position: "absolute" as const, left: p.box.x, top: p.box.y, width: p.box.w, height: p.box.h };
+  const style = {
+    position: "absolute" as const,
+    left: p.box.x + (offset?.dx ?? 0),
+    top: p.box.y + (offset?.dy ?? 0),
+    width: p.box.w,
+    height: p.box.h,
+  };
 
   if (p.scene3d) {
-    const cls = ["prop", "prop3d", p.highlight && `hl-${p.highlight}`, pickable && "pickable"].filter(Boolean).join(" ");
+    const cls = ["prop", "prop3d", p.highlight && `hl-${p.highlight}`, pickable && "pickable", movable && "movable"].filter(Boolean).join(" ");
     return (
       <div className={cls} data-prop={p.id} style={style} onClick={pickable && onPick ? () => onPick(p.id) : undefined}>
         <Scene3D spec={p.scene3d} t={t} />
@@ -262,7 +285,7 @@ function PropView({ p, t, pickable = false, onPick }: { p: VisibleProp; t: numbe
     );
   }
 
-  const cls = ["prop", p.awaiting && "draft", p.highlight && `hl-${p.highlight}`, pickable && "pickable"].filter(Boolean).join(" ");
+  const cls = ["prop", p.awaiting && "draft", p.highlight && `hl-${p.highlight}`, pickable && "pickable", movable && "movable"].filter(Boolean).join(" ");
   return <div ref={ref} className={cls} data-prop={p.id} style={style} onClick={pickable && onPick ? () => onPick(p.id) : undefined} />;
 }
 
@@ -287,7 +310,7 @@ function verseRows(text: string, progress: number): { said: string; unsaid: stri
   return rows;
 }
 
-export function StageView({ stage, bottomInset = 0, onPick }: { stage: Stage; bottomInset?: number; onPick?: (id: string) => void }) {
+export function StageView({ stage, bottomInset = 0, onPick, onDragAnswer }: { stage: Stage; bottomInset?: number; onPick?: (id: string) => void; onDragAnswer?: (x: number, y: number) => void }) {
   const s = useSyncExternalStore(stage.subscribe, stage.getSnapshot);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ w: 1600, h: 900 });
@@ -297,6 +320,67 @@ export function StageView({ stage, bottomInset = 0, onPick }: { stage: Stage; bo
   // is empty and nothing on the board accepts a click — a recording asks no one.
   const probe = s.gate?.kind === "probe" ? (s.gate.op as { targets: string[] }).targets : null;
   const pickable = probe ? new Set(probe) : null;
+  // A live `drag` turns its named prop into a movable part — the fifth card, direct manipulation:
+  // the learner moves the prop on the board itself, not a card. Same replay rule: gate is null when
+  // live=false, so nothing is movable on a recording.
+  const dragProp = s.gate?.kind === "drag" ? (s.gate.op as DragOp).prop : null;
+  const movable = dragProp ? new Set([dragProp]) : null;
+
+  // The drag itself is learner state, deliberately NOT on the tape (same line as a 3-D prop's
+  // interactive orbit): the offset is how far the prop's visual sits from its anchor while he moves
+  // it, and the confirmed centre is handed up as the answer. The anchor is the tape's only truth.
+  // The state is keyed to the open gate's seq, and `liveDrag` is DERIVED: once that gate closes
+  // (answered, escaped, or replayed away) the match fails, the prop is back at its anchor, and a
+  // later drag gate starts from a clean slate — nothing needs an effect to reset it.
+  const dragSeq = s.gate?.kind === "drag" ? s.gate.seq : null;
+  const [drag, setDrag] = useState<{ seq: number; offset: { dx: number; dy: number } | null; dropped: { x: number; y: number } | null }>({ seq: -1, offset: null, dropped: null });
+  const liveDrag = dragSeq !== null && drag.seq === dragSeq ? drag : null;
+  const dragOffset = liveDrag?.offset ?? null;
+  const dropped = liveDrag?.dropped ?? null;
+  // The world scale is captured when the drag BEGINS: pointer deltas are in screen pixels, and the
+  // prop moves in world units, so the conversion needs the scale of the frame he grabbed. The camera
+  // can't move while the clock is stopped, so capturing it once is exact for the whole drag.
+  const dragRef = useRef<{ id: string; sx: number; sy: number; k: number } | null>(null);
+
+  const beginDrag = (e: React.PointerEvent) => {
+    if (!movable || dragSeq === null) return;
+    const el = (e.target as HTMLElement).closest("[data-prop]");
+    const id = el?.getAttribute("data-prop");
+    if (!id || !movable.has(id)) return;
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragRef.current = { id, sx: e.clientX, sy: e.clientY, k: scale || 1 };
+    setDrag({ seq: dragSeq, offset: { dx: 0, dy: 0 }, dropped: null });
+  };
+  const moveDrag = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d || dragSeq === null) return;
+    setDrag((cur) =>
+      cur.seq === dragSeq ? { ...cur, offset: { dx: (e.clientX - d.sx) / d.k, dy: (e.clientY - d.sy) / d.k } } : cur,
+    );
+  };
+  const endDrag = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d || dragSeq === null) return;
+    dragRef.current = null;
+    const p = s.props.find((pp) => pp.id === d.id);
+    if (!p) return;
+    const dx = (e.clientX - d.sx) / d.k;
+    const dy = (e.clientY - d.sy) / d.k;
+    // The answer is the prop's centre at the moment he let go, world units, rounded.
+    setDrag((cur) =>
+      cur.seq === dragSeq ? { ...cur, offset: { dx, dy }, dropped: { x: Math.round(p.box.x + p.box.w / 2 + dx), y: Math.round(p.box.y + p.box.h / 2 + dy) } } : cur,
+    );
+  };
+  const confirmDrop = () => {
+    if (!dropped) return;
+    onDragAnswer?.(dropped.x, dropped.y);
+    // The gate closes on answerGate; `liveDrag` stops matching and the prop returns to its anchor.
+  };
+  const restoreDrop = () => {
+    if (dragSeq === null) return;
+    setDrag((cur) => (cur.seq === dragSeq ? { ...cur, offset: null, dropped: null } : cur));
+  };
 
   useLayoutEffect(() => {
     const el = hostRef.current;
@@ -315,17 +399,42 @@ export function StageView({ stage, bottomInset = 0, onPick }: { stage: Stage; bo
   const ox = (usable.w - rect.w * scale) / 2 - rect.x * scale;
   const oy = (usable.h - rect.h * scale) / 2 - rect.y * scale;
   const three = s.props.filter((p) => p.scene3d).length;
-  const drag = s.props.some((p) => p.scene3d?.interactive);
+  const drag3d = s.props.some((p) => p.scene3d?.interactive);
   // `dim-rest` names one prop and dims the *rest*, so the mark has to go on the board, not the prop.
   const dimRest = s.props.some((p) => p.highlight === "dim-rest");
 
   return (
     <div className="stage" data-track={s.track} ref={hostRef}>
-      <div className={`world${dimRest ? " dim-rest" : ""}`} style={{ transform: `translate(${ox}px, ${oy}px) scale(${scale})` }}>
+      <div
+        className={`world${dimRest ? " dim-rest" : ""}`}
+        style={{ transform: `translate(${ox}px, ${oy}px) scale(${scale})` }}
+        onPointerDown={movable ? beginDrag : undefined}
+        onPointerMove={movable ? moveDrag : undefined}
+        onPointerUp={movable ? endDrag : undefined}
+        onPointerCancel={movable ? endDrag : undefined}
+      >
         {s.props.map((p) => (
-          <PropView key={p.id} p={p} t={s.t} pickable={pickable?.has(p.id) ?? false} onPick={onPick} />
+          <PropView
+            key={p.id}
+            p={p}
+            t={s.t}
+            pickable={pickable?.has(p.id) ?? false}
+            onPick={onPick}
+            movable={movable?.has(p.id) ?? false}
+            offset={movable?.has(p.id) ? dragOffset : null}
+          />
         ))}
       </div>
+      {/* He let go but has not confirmed yet: the prop stays where he put it, and the chip asks. */}
+      {dropped && dragProp && (
+        <div className="drag-chip">
+          <span>放在 ({dropped.x}, {dropped.y})？</span>
+          <div className="drag-chip-actions">
+            <button onClick={confirmDrop}>就是这里</button>
+            <button onClick={restoreDrop}>还原</button>
+          </div>
+        </div>
+      )}
       {s.veil && <div className={`veil veil-${s.veil.style}`} style={{ opacity: veilOpacity(s.veil.progress) }} />}
       {s.narration && s.narration.style === "verse" && (
         <div className="narration verse">
@@ -347,7 +456,7 @@ export function StageView({ stage, bottomInset = 0, onPick }: { stage: Stage; bo
         </div>
       )}
       <div className="telemetry">
-        {s.props.length} props{three ? ` · ${three} 3D${drag ? "（可拖动·转动不进分享）" : ""}` : ""} · t={Math.round(s.t)}ms
+        {s.props.length} props{three ? ` · ${three} 3D${drag3d ? "（可拖动·转动不进分享）" : ""}` : ""} · t={Math.round(s.t)}ms
         {s.track === "main" ? "" : ` · ${s.track}`}
         {s.artWait ? ` · 时钟等美工（欠 ${s.artOwed} 格）` : ""}
       </div>
