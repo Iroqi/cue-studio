@@ -281,6 +281,21 @@ export function directorTools(
         const rushed = got > line.duration / 1000 + 0.05;
         return { ops, result: `narrated ${line.text.length} chars — this beat runs ${got.toFixed(1)}s${rushed ? " (longer than you asked: the clock will not rush a sentence, and the cut after it waits for the voice)" : ""}` };
       }
+      case "offer": {
+        // Intelligent UI's Actions / issueNewTurn: a button whose click sends a phrase into the
+        // conversation EXACTLY as if the learner typed it — nothing marks it as coming from the button.
+        // A door the director opens with his own words; it never stops the clock and is never graded,
+        // so the label has to read as something the learner would genuinely say. Guard here, not in the
+        // door: an offer with no readable words is a door nobody understands.
+        const label = S(args.label).trim();
+        const phrase = S(args.phrase).trim();
+        if (!label) return { ops, result: "offer needs a button label the learner can read", isError: true };
+        if (!phrase) return { ops, result: "offer needs the phrase that goes into the conversation when clicked", isError: true };
+        if (label.length > 40) return { ops, result: `offer label too long for a button (${label.length} chars, keep under 40): ${label.slice(0, 24)}…`, isError: true };
+        if (phrase.length > 200) return { ops, result: `offer phrase too long (${phrase.length} chars, keep it one sentence the learner would actually say)`, isError: true };
+        ops.push({ kind: "offer", label, phrase, ...(args.why ? { why: S(args.why) } : {}) });
+        return { ops, result: `offer queued: the board shows 「${label}」; clicking it sends exactly 「${phrase}」 — stored like the learner typed it, nothing marks it as coming from the button.` };
+      }
       case "beat":
         ops.push({ kind: "beat", duration: N(args.seconds, 1) * 1000 });
         return { ops, result: `silence ${N(args.seconds, 1)}s` };
@@ -532,6 +547,7 @@ export function directorTools(
     { name: "type", description: "Stop the clock and ask the learner to TYPE a short answer in a text box — graded correct only when his text contains EVERY required word (case-insensitive). Use this for 「say the term」 / 「one-sentence explanation」 questions where the answer is not something he can recognize (no options, no on-board shape, no number): e.g. 用一句话说清楚什么是导数. His exact words still come back to you; avoid lists a known wrong word so you can tell which misconception he fell into.", parameters: Type.Object({ prompt: str("the question, e.g. 用一句话说清楚：什么是导数？"), accept: Type.Array(str("every word/phrase he MUST say, e.g. [瞬时, 变化率]"), { minItems: 1, maxItems: 8 }), avoid: Type.Optional(Type.Array(str("a known wrong word that flags a misconception, e.g. [平均]"))), placeholder: Type.Optional(str("hint inside the box, e.g. 想想切线在那一瞬间的斜率")), why: Type.Optional(str("said only after he submits")), concept: Type.Optional(str("the single idea this probes, e.g. 导数是瞬时变化率")) }) },
     { name: "drag", description: "Stop the clock and ask the learner to MOVE a prop on the board to a target position — the answer is a POSITION (world units of the prop's centre), graded by Euclidean distance within tolerance, not a choice. Use this when the point is that he can perform the placement himself (「把箭头 b 的头搬到箭头 a 的头上」「把这块石头滚到谷底」) — the board IS the question, and nothing to recognize, estimate or type exists. The named prop must be standing on stage right now. His confirmed placement lands on the tape and you branch from how close he got.", parameters: Type.Object({ prompt: str("the question, e.g. 把 b 的头搬到 a 的头上"), prop: str("prop id he must move — must be standing on stage right now"), value: Type.Object({ x: num("target centre x, world units"), y: num("target centre y, world units") }), tol: Type.Optional(num("absolute tolerance in world units: distance(centre, value) <= tol counts as correct; default 0")), why: Type.Optional(str("said only after he confirms")), concept: Type.Optional(str("the single idea this probes, e.g. 向量加法是首尾相接")) }) },
     { name: "pause_for", description: "Stop the clock until the learner presses continue. Use after a loaded idea, not after every sentence.", parameters: Type.Object({ reason: str("what the learner should do with this pause") }) },
+    { name: "offer", description: "Put a button on the board. Clicking it sends `phrase` into the conversation EXACTLY as if the learner typed it — nothing marks it as coming from the button (Intelligent UI's Actions / issueNewTurn). Use it to invite ONE specific low-stakes thing the learner may want to do or say (「我想自己试一下」「让我再看一遍那个动图」「把这道先记下，回头再来」), usually while NO question is open. It never stops the clock and is never graded: a door you open with your own words. The label is the button text; the phrase is what he is understood to have said.", parameters: Type.Object({ label: str("the button text, ≤ 40 chars, in the learner's own voice, e.g. 我想自己试一下"), phrase: str("exactly what is sent when clicked — write it as the learner's own words, one sentence, e.g. 我想自己试一下，你先别提示"), why: Type.Optional(str("why this door is here, for your own record")) }) },
     { name: "note_progress", description: "Record teaching state (concepts genuinely covered, learner condition). This is written into the system prompt sections, so history stays cache-stable. Call it whenever a concept is actually understood.", parameters: Type.Object({ concepts_covered: Type.Optional(Type.Array(str("short concept names"))), learner_state: Type.Optional(str("one line: where the learner is now")), beats_advanced: Type.Optional(num("how many beats of the plan this turn completed")) }) },
     { name: "stage_state", description: "Read the current stage: clock, camera, scenes, live props with geometry, open questions.", parameters: Type.Object({}) },
   ];

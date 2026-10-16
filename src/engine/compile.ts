@@ -7,6 +7,7 @@ import type {
   Cue,
   Gate,
   NarrateOp,
+  OfferView,
   Op,
   OpEntry,
   Prop,
@@ -512,6 +513,7 @@ export class Interpreter {
   private readonly cues: Cue[] = [];
   private readonly gates: Gate[] = [];
   private readonly beats: Beat[] = [];
+  private readonly offers: OfferView[] = [];
   /**
    * 每一刀镜头落在哪一刻，按 op 引用记。带子只增不改，所以"这一刀问的是哪一刻"在排好的那一刻就该
    * 有答案 —— 那一问以前写成 `cues.find((c) => c.op === askedBy)`，而它的用法恰恰是**找不到才说话**，
@@ -971,6 +973,13 @@ export class Interpreter {
           if (asked && asked.said === null) asked.said = op.text;
           break;
         }
+        case "offer": {
+          // A door the director opens, not a question: it never stops the clock, never opens a gate,
+          // and is never graded — it only records "at this moment a button became available". The
+          // audience renders it from this time on (live: clickable; replay: a static chip).
+          this.offers.push({ t: start, seq: entry.seq, label: op.label, phrase: op.phrase });
+          break;
+        }
         case "beat": {
           this.pushCue({ t: start, end: start + cueMs(op), op, from: this.cursor, to: this.cursor });
           break;
@@ -1037,6 +1046,7 @@ export class Interpreter {
       cues: this.cues,
       gates: this.gates,
       beats: this.beats,
+      offers: this.offers,
       duration: Math.max(this.t, this.tails),
       lastSeq: this.lastSeq,
       touched: this.touched,

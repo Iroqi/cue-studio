@@ -325,6 +325,27 @@ export interface AnswerOp {
   text: string;
 }
 
+/**
+ * The sixth interaction, and the one Intelligent UI calls "Actions / issueNewTurn": a button the
+ * interface renders whose click sends a composed message, *stored exactly like a typed one, with
+ * nothing marking it as coming from the interface*. Here the DIRECTOR authors the button: `label` is
+ * what the learner reads, `phrase` is what gets sent down the same path as typing it in the console.
+ *
+ * It is deliberately NOT a gate: it never stops the clock, never opens a question, and is never graded.
+ * It is a door the director opens with his own words — the escape hatches are the two fixed doors,
+ * this is the director's own door. The audience renders it from the moment the playhead reaches it
+ * (live: clickable; replay: a static chip, because a recording asks no one).
+ */
+export interface OfferOp {
+  kind: "offer";
+  /** The button text the learner reads, short, in his own voice. */
+  label: string;
+  /** Exactly what is sent when clicked — written as the learner's own words. */
+  phrase: string;
+  /** Why this door is here, for the director's own record. */
+  why?: string;
+}
+
 export type Op =
   | BuildOp
   | PatchOp
@@ -343,6 +364,7 @@ export type Op =
   | TypeOp
   | DragOp
   | PauseOp
+  | OfferOp
   | AnswerOp;
 
 export interface OpEntry {
@@ -446,6 +468,15 @@ export interface Cue {
   to: Box;
 }
 
+/** One door the director opened: the offer becomes available when the playhead reaches `t` and stays open until clicked (live) or for the whole replay (static). */
+export interface OfferView {
+  t: number;
+  /** The op's own seq, so the audience can tell one door from another (and a clicked door from an unclicked one). */
+  seq: number;
+  label: string;
+  phrase: string;
+}
+
 export interface Gate {
   t: number;
   seq: number;
@@ -480,6 +511,8 @@ export interface Compiled {
   cues: Cue[];
   gates: Gate[];
   beats: Beat[];
+  /** Doors the director opened, in tape order: `{t, seq, label, phrase}` — see `OfferView`. */
+  offers: OfferView[];
   duration: number;
   lastSeq: number;
   /**

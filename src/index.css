@@ -389,6 +389,43 @@ button.x {
   color: var(--mg);
 }
 
+/* Doors the director opened: one click sends its phrase down the same path as typing. Floating
+   bottom-right, above the dock, away from the narration line (centred) and the transport (top). */
+.offer-row {
+  position: absolute;
+  right: 22px;
+  bottom: calc(var(--dock) + 22px);
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 46%;
+}
+
+.offer-row .offer {
+  font-size: 13.5px;
+  line-height: 1;
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: rgba(16, 13, 27, 0.92);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(125, 211, 252, 0.5);
+  color: var(--cy);
+  cursor: pointer;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.offer-row .offer:hover {
+  background: rgba(125, 211, 252, 0.14);
+}
+
+.offer-row .offer.static {
+  border-color: rgba(232, 230, 240, 0.25);
+  color: var(--dim);
+  cursor: default;
+}
+
 @keyframes pick-ring {
   0%,
   100% {

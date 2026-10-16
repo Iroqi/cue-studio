@@ -12,7 +12,7 @@ import { LearnerArchive } from "./ui/LearnerArchive";
 import { rowsFor } from "./ui/rows";
 import { LogRows } from "./ui/LogRows";
 import { getModels, loadConfig, saveConfig, setScriptedResponses, type LlmConfig } from "./llm/llm";
-import type { DialOp, DragOp, OpEntry, TypeOp } from "./engine/types";
+import type { DialOp, DragOp, OfferView, OpEntry, TypeOp } from "./engine/types";
 
 const RATES = [0.5, 1, 2, 4];
 
@@ -148,6 +148,8 @@ export default function App() {
   /** The band the camera has to clear — whatever the dock actually measures, never a guessed constant. */
   const [dockH, setDockH] = useState(150);
   const [railOpen, setRailOpen] = useState(true);
+  /** Offers the learner already clicked this session: one phrase per door, no double-send. */
+  const [offersConsumed, setOffersConsumed] = useState<Set<number>>(new Set());
 
   useLayoutEffect(() => {
     const el = dockRef.current;
@@ -181,7 +183,6 @@ export default function App() {
           }),
         onUsage: setUsage,
       });
-      (globalThis as unknown as { __teacher: Teacher }).__teacher = teacherRef.current;
     }
     return teacherRef.current;
   };
@@ -211,6 +212,7 @@ export default function App() {
     decodeTape(location.hash.slice(3)).then(
       (entries) => {
         stage.load(entries);
+        setOffersConsumed(new Set());
         // 报的是**进得来**的那几格，不是地址里带着的那几格：门会把说不清自己在哪儿的一格丢掉，
         // 而这一句是给点链接的人看的，他得知道自己眼前演的是多少刀。
         setStatus(`载入别人排过的一场：${stage.log.length} 条指令，重放它一个模型都没叫。`);
@@ -233,6 +235,7 @@ export default function App() {
     setTopic(topic);
     history.replaceState(null, "", location.pathname + location.search);
     stage.reset();
+    setOffersConsumed(new Set());
     setLines([]);
     dropTeacher();
     if (cfg.scripted) {
@@ -252,15 +255,18 @@ export default function App() {
    * One utterance from the learner. Which way it goes — on to the same board, or as an aside that
    * cuts into the passage in progress — is the loop's call, so the host only asks it and follows.
    */
-  const speak = async () => {
-    const q = entry.trim();
-    if (!q) return;
+  /**
+   * One utterance from the learner, however it arrived: typed in the console, or sent by an offer
+   * button the director opened. An offer's click goes through the SAME path as typing — Intelligent
+   * UI's "stored exactly like a typed one, with nothing marking it as coming from the interface" —
+   * so the loop never learns which door it came through.
+   */
+  const sendText = async (q: string) => {
     const t = teacher();
     const onto = t.continuesBoard();
     // Words during the cold start are not an interruption — there is nothing to interrupt yet. They are
     // held and become the next continuation, so the rehearsal deck must load the continuation score.
     const hold = !onto && stage.compiled.duration === 0;
-    setEntry("");
     if (cfg.scripted) {
       getModels(cfg);
       setScriptedResponses(onto || hold ? continuationScore() : asideScore());
@@ -269,6 +275,13 @@ export default function App() {
     if (onto && !stage.live) stage.goLive();
     setStatus(hold ? "这句话记下了 —— 这一排落定就接上你的。" : onto ? "接着这块板往下讲…" : "学习者打断…");
     await t.respond(q);
+  };
+
+  const speak = async () => {
+    const q = entry.trim();
+    if (!q) return;
+    setEntry("");
+    await sendText(q);
   };
 
   const exportLog = () => {
@@ -284,6 +297,7 @@ export default function App() {
     file.text().then((t) => {
       try {
         stage.load(JSON.parse(t) as OpEntry[]);
+        setOffersConsumed(new Set());
         setStatus("载入录像：这是上一场的过程产物，重放它不需要任何模型。");
         stage.play();
       } catch (e) {
@@ -336,6 +350,14 @@ export default function App() {
     const right = Math.hypot(x - op.value.x, y - op.value.y) <= op.tol + 1e-9;
     stage.answerGate(`${x},${y}`);
     setVerdict({ ok: right, text: right ? "放对了" : "放偏了 —— 接下来这一拍会演出为什么" });
+  };
+  /** Doors the playhead has reached and the learner has not already used: one click, one phrase. */
+  const offers = compiled.offers.filter((o) => o.t <= snap.t && !offersConsumed.has(o.seq));
+  const handleOffer = (o: OfferView) => {
+    if (!stage.live) return;
+    setOffersConsumed((s) => new Set(s).add(o.seq));
+    // Exactly like typing it: the same path, the same transcript, nothing marks it as a button click.
+    void sendText(o.phrase);
   };
   // The light follows the playhead, not the ownership: looking back at your own lesson dims it, and the lesson is still yours.
   const liveTail = snap.following;
@@ -509,6 +531,25 @@ export default function App() {
           </div>
         )}
         {verdict && <div className={"verdict" + (verdict.ok === true ? " ok" : verdict.ok === false ? " miss" : "")}>{verdict.text}</div>}
+
+        {/* Doors the director opened: one click sends its phrase down the same path as typing. Live it
+            is a button (consumed on click, no double-send); a replay shows the doors as static chips,
+            because a recording asks no one. */}
+        {offers.length > 0 && (
+          <div className="offer-row">
+            {offers.map((o) =>
+              stage.live ? (
+                <button key={o.seq} className="offer" onClick={() => handleOffer(o)} title={`按下会把「${o.phrase}」当作你说的话送进对话`}>
+                  {o.label}
+                </button>
+              ) : (
+                <span key={o.seq} className="offer static" title={o.phrase}>
+                  {o.label}
+                </span>
+              ),
+            )}
+          </div>
+        )}
 
         {/* His own words, on the tape: a replayed or shared lesson shows the dialogue, not just the lecture. */}
         {!gate && snap.said && <div className="echo">他当时答的是「{snap.said}」</div>}

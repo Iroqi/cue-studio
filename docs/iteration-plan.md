@@ -771,3 +771,72 @@ editable charts"那一串，dial 取走了 sliders；charts 那一份一直没�
 
 同族 flaky 记录：这一轮全套在 drag.test.ts 19 绿之上，compile.test.ts「每题一答」的毫秒守卫
 （`toBeGreaterThan(10)`）在基线 HEAD 上同样红（本机 7.5ms 档），已在第六轮记录在案，非本轮引入。
+
+# 第八轮 brainstorm（2026-10-17）：Actions / issueNewTurn —— 按钮也是一句话
+
+## 前七轮走到哪了
+
+openui 的拆解把 Intelligent UI 拆成：**受限界面语言 / 组件清单 / 流式呈现 / 交互不付费 / Rough edges /
+设计原则 / Actions（issueNewTurn）**。七轮下来仓库已经吸收了前六块：
+
+- 界面语言与流式呈现：op 日志 + 解释器，模型边吐边编译上板（一开始就有）。
+- 组件清单：buttons/selectable parts（quiz 认选项）、sliders（dial 拨数）、editable charts（drag 搬道具）、forms（type 打字）。
+- 交互不付费：点击、拨杆、拖动都不算 tokens（`offer` 按下同样一句话也不付费）。
+- Rough edges：逻辑错误是静的（`pause-for` 回执把"静"说破）、非法属性没反馈（guard 听筒 notes）。
+- 设计原则：escape hatches（第五扇门：我不会/跳过这道）、trust the user、show your work / progress（账目条）。
+
+只剩最后一整块缺口：**Actions / issueNewTurn**。拆解原文说的是：界面上的按钮把一句话送回对话，
+而且"存储时和亲手打出来一模一样、没有任何标记说明它来自界面"。仓库现状：逃生门只有两句写死的短语
+（我不会 / 跳过这道）——导演**无法**定制"点一下就送一句话"的低风险动作。这是"界面说话"的反方向：
+前七轮一直是学习者用界面回答导演；这一轮让导演用界面**替他开口**——在他明显想主动做一件小事、
+又不想逼他打字的时候，开一扇门让他按一下就把话说出去。
+
+## 选定：第六种交互 `offer` op + 新动词 `offer` —— 导演在台上开一扇门（不是一张卡）
+
+`OfferOp{kind:"offer"; label; phrase; why?}`：`label` 是按钮上那句话（他读），`phrase` 是按下后
+送进对话的那句话（以**他的原话**写，不是"学习者按了按钮"这种第三人称转述）。
+
+- **click 走与打字完全同一条路**：App 把 `speak` 抽成 `sendText(q)`，打字和 offer 点击共用同一个
+  `respond()` 路径——`stored exactly like a typed one, nothing marks it as coming from the button`。
+  导演回执里那句 `nothing marks it as coming from the button` 就是把拆解原文钉成承诺。
+- **永不停表、永不判分、不开 Gate**：offer 不占时钟（旁白照旧定时长、拍表只按旁白收口）、不开卡、
+  不是题。`compiled.offers: OfferView[]{t,seq,label,phrase}`，`t` = 门落下的时刻 = 该 op 所在拍的 start。
+- **回放（live=false）时门渲染为静态 chip**：录像不再问人——点了也不发送。和五张卡"回放不开卡"
+  同一句道理。
+- **只发一次**：`offersConsumed` Set 记已按过的门（load/import/start 时重置），同一扇门不重复送。
+- **门护栏**：label 照 120 字（`name()`）、phrase 照 2000 字（`line()`）截断并走听筒 notes；
+  label 空退回用 phrase 当按钮字、phrase 空退回用 label（"门至少还有一句人话"）。导演工具那一头更严：
+  label/phrase 任一空、label>40、phrase>200 直接 `isError` 不落笔（按钮不是海报，按下没话可说就不成门）。
+
+## 三层测试设计（落地后补实测）
+
+形状：offers 落带（t/seq/label/phrase、不开卡）；offer 不占时钟不开新问；干净 op 同引用；
+label/phrase 封顶+听筒；互相退回。导演工具：好门 offer queued 回执（点明"和打字一模一样"）；
+label 空 / label 超长 / phrase 空不成门。scripted 回执：按下送出的 phrase 以 user 消息进对话、
+消息表里没有"来自按钮"的任何标记。观众头：goLive 会把钟推到实时边（带子尽头）——测试先 `seek(0)`
+再验证"时钟没到没有按钮、到了按钮在"；点击走 `Teacher.prototype.respond`（spy 钉路径）且门关上只送
+一次；回放渲染静态 chip、点击不 send。
+
+## 实测与反向验证（同一轮补完）
+
+`src/engine/offer.test.ts` 12 条全绿：形状 5（offers 落带含 t/seq/label/phrase 且不开卡；offer 不占
+时钟、门开在旁白走完那一刻；干净 op 同引用；label/phrase 封顶+听筒；label/phrase 互相退回）、
+导演工具 4（好门回执 / label 空 / label 超长 / phrase 空不成门）、scripted 回执 1（点击后 phrase
+以 user 消息进对话、回执含"和打字一模一样"、无来源标记）、观众头 2（live 按钮出现/点击走 respond/
+门关只送一次；回放静态 chip 点击不 send）。tsc 干净。
+
+反向验证（变异清单，全部在改后的代码上做，跑完精确还原，不用 `git checkout`——guard 基线没有
+offer 分支，checkout 会把整分支删光）：
+- M1 把 compile 的 `case "offer"` 改成 no-op —— "offers 落带"红。
+- M2 把 guard 的 label 上限从 `name()`（120）改回 `line()`（2000）—— "120 字封顶"红。
+- M3 把 App 的 `offersConsumed` 过滤摘掉 —— 点击后门不关上（首跑 `-t` 没命中测试名误判 12 skipped，
+  换真正被保护的行为断言后红——教训同第七轮 M5：测试要用真正被保护的行为来断言）。
+- M4 把回放也渲染成可点按钮 —— "录像给静态 chip"红。
+- M5 点击送 `o.label` 而不是 `o.phrase` —— 观众头"respond 收到 phrase"红。
+- M6 导演工具 label 上限 40→9999 —— "按钮字太长不成门"红。
+- M7 时间边界 `o.t <=` 改 `o.t <` —— 钉住"时钟刚走到门开那一刻按钮就在"的闭区间，红。
+
+同轮还踩过一个 lint 坑：新增代码让 oxlint 在 `App.tsx` 多出一条 `react(immutability)` 警告
+（oxlint 跨函数追到 `onClick → handleOffer → sendText → teacher()` 链上对 `globalThis.__teacher`
+的写）。`__teacher` 全仓零读者（测试只依赖 `__stage`），是前几轮留下的死调试钩子，顺手删掉；
+oxlint 回到基线 2 条警告（BeatRail exhaustive-deps + App refs，均非本轮引入）。

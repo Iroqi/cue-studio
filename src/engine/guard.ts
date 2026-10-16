@@ -668,6 +668,31 @@ export function guardOp(op: Op, notes?: (n: string) => void): Op {
         ...(op.concept !== undefined ? { concept } : {}),
       });
     }
+    case "offer": {
+      // The sixth interaction — not a question, a door the director opens with his own words: the
+      // button the learner reads (`label`) and the sentence his click sends (`phrase`), stored exactly
+      // like a typed one. The door only knows the op, so it just keeps both readable: a button label
+      // that cannot be read falls back to the phrase (the button says what it sends), and a phrase
+      // that cannot be read falls back to the label (the button at least sends its own words).
+      const label = name(op.label);
+      const phrase = line(op.phrase);
+      trunc("label", op.label, label, MAX_NAME);
+      trunc("phrase", op.phrase, phrase, MAX_TEXT);
+      let lbl = label;
+      let phr = phrase;
+      if (lbl === "") {
+        if (notes) notes("offer.label 空，退回用 phrase 当按钮字");
+        lbl = phrase.slice(0, MAX_NAME);
+      }
+      if (phr === "") phr = lbl;
+      const why = op.why === undefined ? undefined : line(op.why);
+      trunc("why", op.why, why ?? "", MAX_TEXT);
+      return revise(op, {
+        label: lbl,
+        phrase: phr,
+        ...(op.why !== undefined ? { why } : {}),
+      });
+    }
     case "answer": {
       // The learner's own words, and the card they answer. `gate` is looked up with `===` against the
       // sequence numbers the log handed out, so a non-number is not a sloppy number — it is an answer
