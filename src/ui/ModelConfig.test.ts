@@ -83,6 +83,35 @@ describe("模型配置：手填的入口", () => {
     const ids = next.providers[0].models.map((m) => m.id).sort();
     expect(ids).toEqual(["gpt-x", "model-id"]);
     expect(next.providers[0].models.find((m) => m.id === "model-id")?.label).toBe("手写模型");
+    expect(next.providers[0].models.find((m) => m.id === "gpt-x")?.label).toBe("gpt-x"); // 新行自动填显示名，不用手写
+    vi.unstubAllGlobals();
+  });
+
+  it("拉取自动填显示名：接口给了名字用名字，没给就用 id 顶上，已有行保留原显示名", async () => {
+    const cfg: LlmConfig = {
+      ...base,
+      providers: [
+        {
+          ...base.providers[0],
+          models: [{ id: "deepseek-chat", label: "我改过的名字", reasoning: true, contextWindow: 128000, maxTokens: 8192 }],
+        },
+      ],
+    };
+    const { host, onChange } = mount(cfg);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ data: [{ id: "deepseek-chat", name: "DeepSeek Chat" }, { id: "deepseek-reasoner" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    await act(async () => void byText(host, "拉取模型列表").click());
+    const next = onChange.mock.calls.at(-1)![0] as LlmConfig;
+    const models = next.providers[0].models;
+    expect(models.find((m) => m.id === "deepseek-chat")?.label).toBe("我改过的名字"); // 已在板上的行，名字不许被覆盖
+    expect(models.find((m) => m.id === "deepseek-reasoner")?.label).toBe("deepseek-reasoner"); // 接口没给名字 → id 顶上
     vi.unstubAllGlobals();
   });
 });

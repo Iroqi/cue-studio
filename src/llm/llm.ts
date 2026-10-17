@@ -181,7 +181,7 @@ export function getModels(cfg: LlmConfig): MutableModels {
           },
         },
         async fetchModels() {
-          return listRemoteModels(p).then((ids) => ids.map((id) => toModel(p, { id, reasoning: true, contextWindow: 128000, maxTokens: 8192 })));
+          return listRemoteModels(p).then((rows) => rows.map(({ id, label }) => toModel(p, { id, label, reasoning: true, contextWindow: 128000, maxTokens: 8192 })));
         },
       }),
     );
@@ -216,7 +216,13 @@ export function modelFor(cfg: LlmConfig, role: Role): Model<ChatApi> | undefined
 }
 
 /** GET /models — the shape 中转站 and both first-party APIs answer, per provider api. */
-export async function listRemoteModels(p: ProviderCfg): Promise<string[]> {
+export interface RemoteModelRow {
+  id: string;
+  /** A display name the endpoint actually returned, if any. */
+  label?: string;
+}
+
+export async function listRemoteModels(p: ProviderCfg): Promise<RemoteModelRow[]> {
   if (!p.baseUrl) return [];
   const url = p.baseUrl.replace(/\/+$/, "") + "/models";
   const headers: Record<string, string> = { Accept: "application/json" };
@@ -231,10 +237,21 @@ export async function listRemoteModels(p: ProviderCfg): Promise<string[]> {
   const body = (await res.json()) as Record<string, unknown>;
   const rows = (body.data ?? body.models ?? body) as unknown;
   if (!Array.isArray(rows)) return [];
-  return rows
-    .map((r) => (typeof r === "string" ? r : ((r as Record<string, unknown>)?.id as string)))
-    .filter((x): x is string => typeof x === "string" && x.length > 0)
-    .sort();
+  const out: RemoteModelRow[] = [];
+  for (const r of rows) {
+    if (typeof r === "string") {
+      if (r.length > 0) out.push({ id: r });
+      continue;
+    }
+    const row = r as Record<string, unknown>;
+    const id = typeof row.id === "string" ? row.id : "";
+    if (!id) continue;
+    // Some relays answer a human name next to the id; take it when offered, otherwise the UI
+    // fills the id in as the display name so the user never has to hand-write a label.
+    const label = [row.name, row.display_name, row.title].find((x): x is string => typeof x === "string" && x.length > 0);
+    out.push({ id, ...(label ? { label } : {}) });
+  }
+  return out.sort((a, b) => a.id.localeCompare(b.id));
 }
 
 export interface TurnEvents {

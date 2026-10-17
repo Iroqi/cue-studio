@@ -61,12 +61,19 @@ export function ModelConfig({ cfg, onChange, onEvent }: Props) {
   const pull = async (p: ProviderCfg) => {
     setBusy(p.id);
     try {
-      const ids = await listRemoteModels(p);
-      if (ids.length === 0) onEvent(`${p.name}：接口没有返回模型列表，点「+ 手填一个模型」自己写`);
-      else onEvent(`${p.name}：拉到 ${ids.length} 个模型`);
+      const rows = await listRemoteModels(p);
+      if (rows.length === 0) onEvent(`${p.name}：接口没有返回模型列表，点「+ 手填一个模型」自己写`);
+      else onEvent(`${p.name}：拉到 ${rows.length} 个模型`);
       const known = new Map(p.models.map((m) => [m.id, m]));
       patchProvider(p.id, {
-        models: [...ids.map((id) => known.get(id) ?? { id, reasoning: true, contextWindow: 128000, maxTokens: 8192 }), ...p.models.filter((m) => !ids.includes(m.id))],
+        models: [
+          // A fresh row gets its display name filled in automatically: the endpoint's own name when it
+          // offered one (some relays answer `name` next to the id), the id itself otherwise — the user
+          // never has to hand-write a label just to tell two rows apart. Rows already on the board
+          // keep whatever label they had.
+          ...rows.map(({ id, label }) => known.get(id) ?? { id, label: label || id, reasoning: true, contextWindow: 128000, maxTokens: 8192 }),
+          ...p.models.filter((m) => !rows.some((r) => r.id === m.id)),
+        ],
       });
     } catch (e) {
       onEvent(`拉取模型失败：${(e as Error).message}（跨域或被服务商拒绝，点「+ 手填一个模型」自己写）`);
