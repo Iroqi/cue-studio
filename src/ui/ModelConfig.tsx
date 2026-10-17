@@ -45,7 +45,12 @@ export function ModelConfig({ cfg, onChange, onEvent }: Props) {
         ? { baseUrl: "https://api.anthropic.com/v1", models: [{ id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", reasoning: true, contextWindow: 200000, maxTokens: 8192 }] }
         : { baseUrl: "", models: [] };
     const p: ProviderCfg = { id: `custom-${n}`, name: `接入 ${n}`, api, ...preset };
-    onChange({ ...cfg, providers: [...cfg.providers, p] });
+    // A role row that has not chosen an 接入 (or points at one that no longer exists) must land on
+    // this new provider, or its model dropdown stays empty while the UI shows the first option's
+    // text and looks chosen. A role that already picked one keeps its choice.
+    const pointAt = (r: { provider: string; model: string }) =>
+      r.provider && cfg.providers.some((x) => x.id === r.provider) ? r : { provider: p.id, model: "" };
+    onChange({ ...cfg, providers: [...cfg.providers, p], director: pointAt(cfg.director), painter: pointAt(cfg.painter) });
   };
 
   const removeProvider = (p: ProviderCfg) => {
@@ -105,6 +110,10 @@ export function ModelConfig({ cfg, onChange, onEvent }: Props) {
         value={cfg[role].provider}
         onChange={(e) => onChange({ ...cfg, [role]: { provider: e.target.value, model: "" } } as LlmConfig)}
       >
+        {/* An unset role selection must be VISIBLE as unset: without this placeholder the browser
+            displays the first 接入's text while the value is still "", and the model dropdown stays
+            empty next to an 接入 that looks chosen. */}
+        <option value="">选择接入…</option>
         {real.map((p) => (
           <option key={p.id} value={p.id}>
             {p.name}
@@ -116,8 +125,11 @@ export function ModelConfig({ cfg, onChange, onEvent }: Props) {
         onChange={(e) => onChange({ ...cfg, [role]: { ...cfg[role], model: e.target.value } })}
       >
         <option value="">选择模型…</option>
-        {(real.find((p) => p.id === cfg[role].provider)?.models ?? []).map((m) => (
-          <option key={m.id} value={m.id}>
+        {(real.find((p) => p.id === cfg[role].provider)?.models ?? []).map((m, i) => (
+          // `key` is the ROW index, not the model id: two providers' rows may share an id (the user's
+          // shot shows two "deepseek" rows), and duplicate keys make React omit or duplicate children
+          // on the next update. The edit handlers below already address rows by index.
+          <option key={i} value={m.id}>
             {m.label ?? m.id}
           </option>
         ))}
@@ -212,7 +224,8 @@ export function ModelConfig({ cfg, onChange, onEvent }: Props) {
             <details>
               <summary>模型清单（显示名 / id / context / max tokens / 是否支持推理）</summary>
               {p.models.map((m, i) => (
-                <div className="model-row" key={m.id}>
+                // Row key is the index, matching how every field below addresses its row (`j === i`).
+                <div className="model-row" key={i}>
                   <input
                     placeholder="显示名（可选）"
                     value={m.label ?? ""}

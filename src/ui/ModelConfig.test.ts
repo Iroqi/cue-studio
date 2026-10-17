@@ -86,3 +86,65 @@ describe("模型配置：手填的入口", () => {
     vi.unstubAllGlobals();
   });
 });
+
+/** 角色行的两个下拉：接入（provider）与模型。一行是 .role-row，[0] 是接入、[1] 是模型。 */
+function roleSelects(host: HTMLElement, row = 0) {
+  return [...host.querySelectorAll<HTMLSelectElement>(".role-row")][row].querySelectorAll<HTMLSelectElement>("select");
+}
+
+const withModels: LlmConfig = {
+  providers: [
+    {
+      id: "p1",
+      name: "接入 1",
+      baseUrl: "https://api.deepseek.com",
+      api: "openai-completions",
+      models: [
+        { id: "deepseek", label: "flash", reasoning: true, contextWindow: 128000, maxTokens: 8192 },
+        { id: "deepseek", label: "pro", reasoning: true, contextWindow: 128000, maxTokens: 8192 },
+      ],
+    },
+  ],
+  director: { provider: "p1", model: "" },
+  painter: { provider: "p1", model: "" },
+  thinking: "medium",
+  scripted: false,
+};
+
+describe("模型配置：角色行的接入与模型联动", () => {
+  it("选中接入后，模型下拉列出该接入的模型（flash / pro 都该在）", () => {
+    const { host } = mount(withModels);
+    const model = roleSelects(host)[1];
+    const texts = [...model.options].map((o) => o.textContent);
+    expect(texts).toContain("flash");
+    expect(texts).toContain("pro");
+  });
+
+  it("没选接入时，接入下拉显示「选择接入…」而不是把第一个接入顶在脸上：没选中就是没选中", () => {
+    const cfg: LlmConfig = { ...withModels, director: { provider: "", model: "" }, painter: { provider: "", model: "" } };
+    const { host } = mount(cfg);
+    const [prov, model] = roleSelects(host);
+    expect(prov.value).toBe(""); // 确实没选中任何接入 —— 显示的文本不能伪装成已选中
+    expect(prov.options[prov.selectedIndex]?.textContent).toBe("选择接入…");
+    expect([...model.options].map((o) => o.textContent)).toEqual(["选择模型…"]); // 没有接入就没有模型，这是真实状态
+  });
+
+  it("加第一个接入时，还没选过接入的角色行自动指向它：模型下拉立刻有得选", () => {
+    const empty: LlmConfig = { providers: [], director: { provider: "", model: "" }, painter: { provider: "", model: "" }, thinking: "medium", scripted: false };
+    const { host, onChange } = mount(empty);
+    act(() => byText(host, "OpenAI 兼容接入").click());
+    const next = onChange.mock.calls.at(-1)![0] as LlmConfig;
+    expect(next.providers).toHaveLength(1);
+    expect(next.director.provider).toBe(next.providers[0].id);
+    expect(next.painter.provider).toBe(next.providers[0].id);
+  });
+
+  it("已经选好接入的角色行，加新接入时不被动：选择留在原接入上", () => {
+    const { host, onChange } = mount(withModels);
+    act(() => byText(host, "OpenAI 兼容接入").click());
+    const next = onChange.mock.calls.at(-1)![0] as LlmConfig;
+    expect(next.providers).toHaveLength(2);
+    expect(next.director.provider).toBe("p1");
+    expect(next.painter.provider).toBe("p1");
+  });
+});
