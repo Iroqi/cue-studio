@@ -82,9 +82,14 @@ export function ModelConfig({ cfg, onChange, onEvent }: Props) {
     });
 
   const saveKey = async (p: ProviderCfg, key: string) => {
-    if ((keys[p.id] ?? "") === key) return; // a blur that changed nothing must not rewrite anything
+    // Compare against what is actually STORED, not against the live input: the field is controlled, so
+    // on blur `key` always equals `keys[p.id]` — the old guard short-circuited every save, and clearing
+    // the field could never clear the stored key either.
+    const stored = (await readKey(p.id)) ?? "";
+    if (stored === key) return; // a blur that changed nothing must not rewrite anything
     setKeys((k) => ({ ...k, [p.id]: key }));
-    await setKey(p.id, key);
+    if (key) await setKey(p.id, key);
+    else await forgetKey(p.id); // an empty field deletes the credential, not stores an empty one
     onEvent(
       key
         ? `已保存 ${p.name} 的密钥（只写在凭据存储里，配置行不留副本；纯浏览器直连意味着它对打开 DevTools 的人可见）`

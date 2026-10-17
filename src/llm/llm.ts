@@ -146,7 +146,12 @@ const faux = new Map<Role, ReturnType<typeof fauxProvider>>();
 const fauxModel = new Map<Role, Model<Api>>();
 
 export function getModels(cfg: LlmConfig): MutableModels {
-  const key = JSON.stringify({ p: cfg.providers.map((p) => [p.id, p.baseUrl, p.api, p.models.length]), s: cfg.scripted });
+  // The key hashes the model ROWS, not just their count: editing a model's id/limits in the config UI
+  // must rebuild the provider registry, or the next turn would stream against the stale registered model.
+  const key = JSON.stringify({
+    p: cfg.providers.map((p) => [p.id, p.baseUrl, p.api, p.models.map((m) => [m.id, m.label ?? "", m.reasoning, m.contextWindow, m.maxTokens])]),
+    s: cfg.scripted,
+  });
   if (collection && builtFor === key) return collection;
   const m = createModels({ credentials: credentialStore });
   m.clearProviders();
@@ -213,7 +218,7 @@ export function modelFor(cfg: LlmConfig, role: Role): Model<ChatApi> | undefined
 /** GET /models — the shape 中转站 and both first-party APIs answer, per provider api. */
 export async function listRemoteModels(p: ProviderCfg): Promise<string[]> {
   if (!p.baseUrl) return [];
-  const url = p.baseUrl.replace(/\/+$/, "") + (p.api === "anthropic-messages" ? "/models" : "/models");
+  const url = p.baseUrl.replace(/\/+$/, "") + "/models";
   const headers: Record<string, string> = { Accept: "application/json" };
   // from the credential store, not from the config row: the key is not kept there any more
   const key = await readKey(p.id);

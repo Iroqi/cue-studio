@@ -210,6 +210,11 @@ describe("compile：一条长带付一次线性的价钱", () => {
   /**
    * 输入翻四倍，时间不许翻到二次的那个量级去。两边都取到几十毫秒以上，否则量的是计时器的
    * 分辨率和 GC 的抖动，不是这条带的形状。
+   *
+   * `small` 不是随手定的：a 的毫秒数得过 `> 10` 这一道门，而机器会越来越快 —— 旧值（10k/20k/6k）
+   * 在快机器上小端只剩 2~5ms，门就翻了（实测 20k 卡表一次跑出 8.5ms，断言当场失败；解释器本身
+   * 是线性的，翻的是计时下限）。现在的取值在常见开发机上小端约 40~90ms，快一倍的机器也还过得了门，
+   * 而 4 倍大端的比值仍守在 3~5 —— 线性的形状没变，只是量程抬起来了。
    */
   const linear = (mk: (i: number) => Op, small: number) => {
     const a = best(entries(small, mk));
@@ -220,7 +225,7 @@ describe("compile：一条长带付一次线性的价钱", () => {
 
   it("五万格道具：一板的地皮测一遍就够了，不是每格道具测一遍整板", () => {
     const bare = (i: number): Op => ({ kind: "build", id: `a${i}`, label: "l", box: { x: 0, y: 0, w: 10, h: 10 }, html: "<p>a</p>" });
-    expect(linear(bare, 10_000)).toBeLessThan(9);
+    expect(linear(bare, 20_000)).toBeLessThan(9);
     // 去重不许改答案：这块板还是那一块板。
     const show = compile(entries(50_000, bare));
     expect(show.scenes.get("default")).toEqual({ x: 0, y: 0, w: 10, h: 10 });
@@ -229,7 +234,7 @@ describe("compile：一条长带付一次线性的价钱", () => {
 
   it("每题一答：回答按 seq 查卡，不从头扫一遍卡表", () => {
     const cards = (i: number): Op => (i % 2 === 0 ? ({ kind: "quiz", prompt: "几", options: ["1", "2"], answer: 1 } as Op) : ({ kind: "answer", gate: i - 1, text: "1" } as Op));
-    expect(linear(cards, 20_000)).toBeLessThan(9);
+    expect(linear(cards, 160_000)).toBeLessThan(9);
     const show = compile(entries(8000, cards));
     expect(show.gates.length).toBe(4000);
     // 每一句回答都认到了自己那张卡 —— 这是 `gateBySeq` 的语义，不是它快不快。
@@ -237,7 +242,7 @@ describe("compile：一条长带付一次线性的价钱", () => {
   });
 
   it("here 的 look-ahead 有界：不把整条带读一遍", () => {
-    expect(linear((i) => unnamed(`p${i}`), 6_000)).toBeLessThan(9);
+    expect(linear((i) => unnamed(`p${i}`), 24_000)).toBeLessThan(9);
   });
 });
 

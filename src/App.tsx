@@ -144,6 +144,9 @@ export default function App() {
   const [more, setMore] = useState(false);
   const [lines, setLines] = useState<{ beat: number; text: string }[]>([]);
   const teacherRef = useRef<Teacher | null>(null);
+  /** The teacher identity is render input too (`BeatRail`/`Seg` hold it and rebuild when it changes),
+      so the instance also lands in state — the ref alone would be a render-time ref read. */
+  const [teacherState, setTeacherState] = useState<Teacher | null>(null);
   const dockRef = useRef<HTMLDivElement | null>(null);
   /** The band the camera has to clear — whatever the dock actually measures, never a guessed constant. */
   const [dockH, setDockH] = useState(150);
@@ -183,6 +186,7 @@ export default function App() {
           }),
         onUsage: setUsage,
       });
+      setTeacherState(teacherRef.current);
     }
     return teacherRef.current;
   };
@@ -226,6 +230,7 @@ export default function App() {
   const dropTeacher = () => {
     teacherRef.current?.stop();
     teacherRef.current = null;
+    setTeacherState(null);
   };
 
   const start = async () => {
@@ -579,7 +584,7 @@ export default function App() {
                 </span>
               )}
             </div>
-            {railOpen && <BeatRail stage={stage} teacher={teacherRef.current} t={snap.t} />}
+            {railOpen && <BeatRail stage={stage} teacher={teacherState} t={snap.t} />}
             <div className="composer">
               <input
                 value={entry}

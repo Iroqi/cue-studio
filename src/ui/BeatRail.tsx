@@ -50,9 +50,13 @@ export function BeatRail({ stage, teacher, t }: Props) {
 
   // Above the early return below: an empty tape is a real state this component renders through, and a
   // hook that only sometimes runs is a hook React will read off the wrong slot the moment a beat lands.
+  // Both dep entries are extracted to locals: the lint rule rejects complex expressions in a dep array,
+  // and the 500ms tick is the only thing the follow-the-playhead scroll should react to.
+  const beatsLen = beats.length;
+  const scrollTick = Math.round(t / 500);
   useEffect(() => {
     rail.current?.querySelector("[data-now]")?.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
-  }, [beats.length, Math.round(t / 500)]);
+  }, [beatsLen, scrollTick]);
 
   // 这一双手每帧都是新对象，可 `holds` 比的是里面的三样：还是这台机器、这个导演、这个回调。
   const view: SegView = { stage, teacher, onArm };
