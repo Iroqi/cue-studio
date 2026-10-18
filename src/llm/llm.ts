@@ -88,7 +88,16 @@ export async function readKey(providerId: string): Promise<string> {
 const credentialStore: CredentialStore = {
   async read(providerId): Promise<Credential | undefined> {
     const raw = localStorage.getItem(CRED + providerId);
-    return raw ? (JSON.parse(raw) as Credential) : undefined;
+    if (!raw) return undefined;
+    // A credential is one write, so a corrupt entry here is a leftover from an interrupted write or
+    // an old build — it must not take the whole model registry down with it. Every other localStorage
+    // read in this app (`loadConfig`, `archive`) already guards its parse; this one is the same rule.
+    try {
+      return JSON.parse(raw) as Credential;
+    } catch {
+      localStorage.removeItem(CRED + providerId);
+      return undefined;
+    }
   },
   async list(): Promise<readonly CredentialInfo[]> {
     const out: CredentialInfo[] = [];
