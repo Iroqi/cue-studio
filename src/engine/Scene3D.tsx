@@ -276,16 +276,22 @@ export function Scene3D({ spec, t }: { spec: Scene3DSpec; t: number }) {
   // spinKey collapses "absent" vs "empty object" so a draw() that adds a spin actually re-runs the effect.
   const spin = spec.spin;
   const spinKey = spin ? `${spin.axis ?? "y"}:${spin.degPerSec ?? 24}` : "";
+  // Two effects, not one: the geometry effect above already painted the first frame, and a static
+  // window must not re-render on every clock tick. The no-spin effect only runs when spinKey itself
+  // changes (draw() adding or removing a spin); the spin effect re-renders per tick, which is the
+  // only time a WebGL paint is actually owed.
   useEffect(() => {
     const h = hRef.current;
-    if (!h) return;
-    if (spinKey) {
-      const [axis, deg] = spinKey.split(":");
-      const rad = (t / 1000) * Number(deg) * D2R;
-      h.group.rotation.set(axis === "x" ? rad : 0, axis === "y" ? rad : 0, axis === "z" ? rad : 0);
-    } else {
-      h.group.rotation.set(0, 0, 0);
-    }
+    if (!h || spinKey) return;
+    h.group.rotation.set(0, 0, 0);
+    h.render();
+  }, [spinKey]);
+  useEffect(() => {
+    const h = hRef.current;
+    if (!h || !spinKey) return;
+    const [axis, deg] = spinKey.split(":");
+    const rad = (t / 1000) * Number(deg) * D2R;
+    h.group.rotation.set(axis === "x" ? rad : 0, axis === "y" ? rad : 0, axis === "z" ? rad : 0);
     h.render();
   }, [t, spinKey]);
 
