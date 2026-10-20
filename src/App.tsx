@@ -326,7 +326,8 @@ export default function App() {
     }
   };
 
-  const gate = snap.gate;  const isQuiz = gate?.kind === "quiz";
+  const gate = snap.gate;
+  const isQuiz = gate?.kind === "quiz";
   const isProbe = gate?.kind === "probe";
   const isDial = gate?.kind === "dial";
   const isType = gate?.kind === "type";
