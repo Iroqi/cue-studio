@@ -90,9 +90,12 @@ function TypeCard({ op, stage, onDone, onEscape }: { op: TypeOp; stage: Stage; o
     const say = text.trim();
     if (!say) return;
     const low = say.toLowerCase();
-    const ok = op.accept.every((w) => low.includes(w.toLowerCase()));
+    // An empty `accept` is the guard's open-question fallback (`type.accept 一个可读的词都没有，
+    // 这张卡退成开放式提问`) — there is no word to check, so the receipt is neutral, exactly like
+    // the tape's own account (`scoreOf` counts an empty accept as unanswered, never as right/wrong).
+    const ok = op.accept.length === 0 ? null : op.accept.every((w) => low.includes(w.toLowerCase()));
     stage.answerGate(say);
-    onDone(ok, ok ? "词都在" : "还缺几个词 —— 接下来这一拍会演出来");
+    onDone(ok, ok === null ? "这句话记下了" : ok ? "词都在" : "还缺几个词 —— 接下来这一拍会演出来");
   };
   return (
     <>

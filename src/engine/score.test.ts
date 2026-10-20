@@ -166,6 +166,67 @@ describe("价钱：账目条的元素数不跟着带子长", () => {
 /*
  * 护栏那一头（变异清单）：把账上任何一刀画错，都必须在整棵 App 上红出来。
  */
+/*
+ * 回执那一头：卡片上的即时刻度与账目条必须照同一条线画（`scoreOf` 的分界）。guard 把空 `accept`
+ * 的 type 卡退成开放式提问 —— 没词可查，`scoreOf` 记为"没判分"；卡片回执若当场挂"词都在"，
+ * 就是回执说答对、账本说不算，两处打架。
+ */
+describe("回执：type 卡的空 accept 兜底走中性态，与账同一刀", () => {
+  const env = () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    act(() => root.render(createElement(App)));
+    const stage = (globalThis as { __stage?: Stage }).__stage!;
+    return { host, root, stage };
+  };
+  /** React 的受控 input 不吃直写 `.value`：走原生 setter + input 事件，和用户在键盘上打字同路。 */
+  const typeInto = (input: HTMLInputElement, text: string) => {
+    const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    act(() => {
+      set.call(input, text);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+
+  it("accept 空表：回执中性（不挂 ok/miss），账本记为没判分", () => {
+    const { host, root, stage } = env();
+    // 时钟停在 t=0，type 卡就在播放头底下：不加教师、不播钟也亮卡。
+    act(() => stage.append([type([]), line("好，接着讲", 1000)], MAIN_TRACK));
+    const input = host.querySelector<HTMLInputElement>(".typecard-input");
+    expect(input).not.toBeNull();
+    typeInto(input!, "瞬时变化率");
+    const submit = host.querySelector<HTMLButtonElement>(".typecard button");
+    act(() => submit!.click());
+    const verdict = host.querySelector(".verdict");
+    expect(verdict?.textContent).toContain("这句话记下了");
+    expect(verdict?.textContent).not.toContain("词都在");
+    expect(verdict?.className).not.toContain("ok");
+    expect(verdict?.className).not.toContain("miss");
+    // 账目条：问了一道，既不对也不错。
+    const account = host.querySelector(".score-account")?.textContent ?? "";
+    expect(account).toContain("问 1");
+    expect(account).not.toContain("对 1");
+    expect(account).not.toContain("错 1");
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  it("accept 有词且都出现：回执照旧挂「词都在」，账本记对", () => {
+    const { host, root, stage } = env();
+    act(() => stage.append([type(["瞬时", "变化率"]), line("好，接着讲", 1000)], MAIN_TRACK));
+    const input = host.querySelector<HTMLInputElement>(".typecard-input")!;
+    typeInto(input, "瞬时变化率");
+    act(() => host.querySelector<HTMLButtonElement>(".typecard button")!.click());
+    const verdict = host.querySelector(".verdict");
+    expect(verdict?.textContent).toContain("词都在");
+    expect(verdict?.className).toContain("ok");
+    expect(host.querySelector(".score-account")?.textContent ?? "").toContain("对 1");
+    act(() => root.unmount());
+    host.remove();
+  });
+});
+
 describe("护栏：账目条在整棵 App 上照实记账", () => {
   it("一场有对有错有逃有开着卡的课：账目条把它数出来", () => {
     const host = document.createElement("div");
