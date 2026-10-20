@@ -535,11 +535,13 @@ export class Teacher {
       const wake = () => {
         signal.removeEventListener("abort", wake);
         const i = this.paintWaiters.indexOf(wake);
-        if (i >= 0) {
-          // Woken by a freed slot, not by cancellation: this waiter is next in line, take its ticket.
-          this.paintWaiters.splice(i, 1);
-          job.slot = true;
-        }
+        if (i >= 0) this.paintWaiters.splice(i, 1);
+        // Woken two ways, told apart by the signal, not by queue membership: `freePaintSlot` calls
+        // this waiter with `shift()`, so by the time it runs it is already out of the array. A freed
+        // slot (signal still alive) transfers to this job — it is about to paint, and it owns that
+        // slot. A cancellation takes it off the queue without a slot: nothing was ever marked held,
+        // so the release below must not hand out a phantom one.
+        if (!signal.aborted) job.slot = true;
         resolve();
       };
       this.paintWaiters.push(wake);
@@ -612,7 +614,10 @@ export class Teacher {
       this.stage.clearPreview(id);
       this.stage.endPaint(id);
       this.paints.delete(id);
-      this.freePaintSlot();
+      // Only a job that actually held a slot returns one. A paint cancelled while queued never
+      // incremented `paintBusy`; releasing a phantom slot would let the pipeline run past
+      // PAINT_CONCURRENCY — a burst of 429s on a free tier is exactly what the cap exists to stop.
+      if (job.slot) this.freePaintSlot();
     }
   }
 
