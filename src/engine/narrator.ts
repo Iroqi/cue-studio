@@ -16,10 +16,19 @@ export class Narrator {
   private paused = false;
   private voice: SpeechSynthesisVoice | null = null;
   private unsub: (() => void) | null = null;
+  /**
+   * No TTS in this environment (some webviews, privacy modes, headless runs): the whole narrator is
+   * decoration there, and reading `speechSynthesis.getVoices()` or calling `speak()` would throw —
+   * which used to take the entire app down with it, because the host constructs a Narrator
+   * unconditionally. Every speech call is behind this flag; the preference still persists, and the
+   * voice simply engages the day the environment has one.
+   */
+  private readonly supported = typeof speechSynthesis !== "undefined";
 
   constructor(stage: Stage) {
     this.stage = stage;
-    this.enabled = localStorage.getItem(KEY) === "on";
+    this.enabled = this.supported && localStorage.getItem(KEY) === "on";
+    if (!this.supported) return;
     const pick = () => {
       const vs = speechSynthesis.getVoices();
       this.voice = vs.find((v) => /^zh[-_]cn/i.test(v.lang)) ?? vs.find((v) => /^zh/i.test(v.lang)) ?? null;
@@ -45,6 +54,7 @@ export class Narrator {
   setEnabled(on: boolean) {
     this.enabled = on;
     localStorage.setItem(KEY, on ? "on" : "off");
+    if (!this.supported) return;
     if (on) this.sync();
     else this.stop();
   }
@@ -52,11 +62,11 @@ export class Narrator {
   private stop() {
     this.line = "";
     this.paused = false;
-    speechSynthesis.cancel();
+    if (this.supported) speechSynthesis.cancel();
   }
 
   private sync() {
-    if (!this.enabled) return;
+    if (!this.enabled || !this.supported) return;
     const s = this.stage.getSnapshot();
     const n = s.narration;
     const key = n ? `${Math.round(s.t - n.progress * n.duration)}|${n.text}` : "";
