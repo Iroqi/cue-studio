@@ -286,12 +286,18 @@ button.x {
   outline-offset: 4px;
 }
 
+/*
+ * 高亮本身有寿命（highlight 动词自带秒数，cue 结束类就摘了），所以这些动画都是一次性的：
+ * 亮起来 → 呼吸一两下 → **停住**。无限循环的呼吸和无限循环的抖动是"在动"，不是"在看哪"——
+ * 它只会把目光钉死在那一点上，等 cue 结束又是一个硬切。
+ */
 .prop.hl-pulse {
-  animation: pulse 1.1s ease-in-out infinite;
+  animation: pulse-settle 1.2s ease-in-out forwards;
 }
 
+/* 乱弹不是强调：抖三下、振幅递减，然后停住在琥珀色的光晕上——"看了那一下"，不是"永远在震"。 */
 .prop.hl-shake {
-  animation: shake 0.4s linear infinite;
+  animation: shake-settle 0.6s ease-out forwards;
 }
 
 .prop.hl-outline {
@@ -321,9 +327,11 @@ button.x {
  * "this one is yours to act on"), but the cursor is a grab hand, not a pointer, and touch drags must
  * not scroll the page behind it.
  */
+/* 可点/可拖的圈是操作反馈：环本身一直留着（不然学习者不知道哪块能点），但脉冲只来两下就停住——
+   引导视线是入场动作，不是呼吸机。 */
 .prop.pickable,
 .prop.movable {
-  animation: pick-ring 1.1s ease-in-out infinite;
+  animation: pick-ring 0.9s ease-in-out 2 forwards;
 }
 
 .prop.pickable {
@@ -497,15 +505,46 @@ button.x {
   opacity: 1;
 }
 
-@keyframes pulse {
+/* 亮起来两下就停住：光晕留在那儿（"看这里"不靠继续动，靠停着的那层光）。 */
+@keyframes pulse-settle {
+  0% {
+    filter: drop-shadow(0 0 2px var(--cy));
+  }
+  25% {
+    filter: drop-shadow(0 0 16px var(--cy));
+  }
   50% {
-    filter: drop-shadow(0 0 18px var(--cy));
+    filter: drop-shadow(0 0 5px var(--cy));
+  }
+  75% {
+    filter: drop-shadow(0 0 14px var(--cy));
+  }
+  100% {
+    filter: drop-shadow(0 0 8px var(--cy));
   }
 }
 
-@keyframes shake {
-  50% {
+/* 三下递减的轻震，第四下回到原位就停，光晕从震完那一刻起留在琥珀色上。 */
+@keyframes shake-settle {
+  0% {
+    transform: translate(0, 0);
+    filter: drop-shadow(0 0 2px var(--am));
+  }
+  12% {
     transform: translate(4px, -3px);
+  }
+  24% {
+    transform: translate(-3px, 2px);
+  }
+  36% {
+    transform: translate(2px, -1px);
+  }
+  48% {
+    transform: translate(0, 0);
+    filter: drop-shadow(0 0 14px var(--am));
+  }
+  100% {
+    filter: drop-shadow(0 0 9px var(--am));
   }
 }
 
