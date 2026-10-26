@@ -4,6 +4,7 @@ import katex from "katex";
 import type { Stage, VisibleProp } from "./runtime";
 import type { DragOp } from "./types";
 import { Scene3D } from "./Scene3D";
+import { revealCut, verseRows } from "./reveal";
 
 /**
  * Model markup is inert by construction — but the old construction was a regex that stripped tags and
@@ -293,23 +294,6 @@ function veilOpacity(progress: number): number {
   return progress < 0.5 ? progress * 2 : (1 - progress) * 2;
 }
 
-/**
- * The rows the stage shows, already laid out at their final size. The clock only uncovers them: a
- * line that grows glyph by glyph inside a centred box drags every glyph before it sideways, and the
- * reader's eye has to chase it. So the tail is present and invisible — nothing reflows mid-verse.
- */
-function verseRows(text: string, progress: number): { said: string; unsaid: string }[] {
-  const shown = Math.round(text.length * progress);
-  const rows: { said: string; unsaid: string }[] = [];
-  let at = 0;
-  for (const line of text.split("\n")) {
-    const cut = Math.max(0, Math.min(line.length, shown - at));
-    if (line.trim()) rows.push({ said: line.slice(0, cut), unsaid: line.slice(cut) });
-    at += line.length + 1;
-  }
-  return rows;
-}
-
 export function StageView({ stage, bottomInset = 0, onPick, onDragAnswer }: { stage: Stage; bottomInset?: number; onPick?: (id: string) => void; onDragAnswer?: (x: number, y: number) => void }) {
   const s = useSyncExternalStore(stage.subscribe, stage.getSnapshot);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -402,6 +386,8 @@ export function StageView({ stage, bottomInset = 0, onPick, onDragAnswer }: { st
   const drag3d = s.props.some((p) => p.scene3d?.interactive);
   // `dim-rest` names one prop and dims the *rest*, so the mark has to go on the board, not the prop.
   const dimRest = s.props.some((p) => p.highlight === "dim-rest");
+  // 揭晓那一刀（按词步进）只跟旁白有关：没有旁白时它是 0，有旁白时两种样式共用同一刀。
+  const shownNarration = s.narration ? revealCut(s.narration.text, s.narration.reveal) : 0;
 
   return (
     <div className="stage" data-track={s.track} ref={hostRef}>
@@ -449,9 +435,9 @@ export function StageView({ stage, bottomInset = 0, onPick, onDragAnswer }: { st
       {s.narration && s.narration.style !== "verse" && s.narration.style !== "voice" && (
         <div className="narration">
           <span>
-            {s.narration.text.slice(0, Math.max(1, Math.round(s.narration.text.length * s.narration.reveal)))}
+            {s.narration.text.slice(0, shownNarration)}
             <i className="caret" />
-            <em className="unsaid">{s.narration.text.slice(Math.max(1, Math.round(s.narration.text.length * s.narration.reveal)))}</em>
+            <em className="unsaid">{s.narration.text.slice(shownNarration)}</em>
           </span>
         </div>
       )}
