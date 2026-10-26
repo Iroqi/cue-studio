@@ -238,7 +238,7 @@ const text = (v: unknown): string | undefined => (typeof v === "string" ? (v.len
  * the whole board down. Everything else (easing, veil style) already has a fallback where it is read.
  */
 const MOTION_MODES = new Set(["oscillate", "approach", "orbit", "iterate", "flow"]);
-const SCENE_MOODS = new Set(["board", "study", "space", "lab"]);
+const LIGHT_MOODS = new Set(["board", "study", "space", "lab"]);
 const MOTION_AXES = new Set(["x", "y", "both"]);
 const CAMERA_MODES = new Set(["fit", "focus", "pan", "zoom", "track"]);
 
@@ -461,9 +461,9 @@ export function guardOp(op: Op, notes?: (n: string) => void): Op {
       numNote("duration", op.duration, duration, "ms");
       return revise(op, { to, duration });
     }
-    case "scene": {
-      const mood: Mood = oneOf(op.mood, SCENE_MOODS, "board");
-      if (notes && typeof op.mood === "string" && mood !== op.mood) notes(`scene.mood=${op.mood} 不认，回退 ${mood}`);
+    case "light": {
+      const mood: Mood = oneOf(op.mood, LIGHT_MOODS, "board");
+      if (notes && typeof op.mood === "string" && mood !== op.mood) notes(`light.mood=${op.mood} 不认，回退 ${mood}`);
       return revise(op, { mood });
     }
     case "highlight": {

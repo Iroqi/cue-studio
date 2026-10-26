@@ -316,8 +316,8 @@ export function directorTools(
       case "transition":
         ops.push({ kind: "transition", style: S(args.style, "dissolve") as never, to: S(args.to), duration: N(args.seconds, 1.2) * 1000 });
         return { ops, result: `transition ${S(args.style)} -> ${S(args.to)}` };
-      case "scene":
-        ops.push({ kind: "scene", mood: S(args.mood, "board") as never });
+      case "light":
+        ops.push({ kind: "light", mood: S(args.mood, "board") as never });
         return { ops, result: `lit as ${S(args.mood)} — atmosphere only, no board move, no clock cost` };
       case "highlight": {
         const miss = onStage(S(args.target));
@@ -542,9 +542,9 @@ export function directorTools(
     { name: "beat", description: "Deliberate silence so a visual lands. Nothing moves.", parameters: Type.Object({ seconds: num("hold duration") }) },
     { name: "transition", description: "Move between scenes with a visible figure. The camera travels to the destination scene's bounds while the veil runs. Props you recalled appear on both sides of it.", parameters: Type.Object({ style: Type.Enum({ dissolve: "dissolve", wipe: "wipe", "match-cut": "match-cut", split: "split" }), to: str("destination scene name"), seconds: Type.Optional(num("default 1.2")) }) },
     {
-      name: "scene",
+      name: "light",
       description:
-        "Set the atmosphere of the stage — the lighting and backdrop the board sits in. This is lighting, not content: the board, the grid and every prop stay exactly where they are, and it costs no clock time. Pick ONE atmosphere at the start of the lesson and stay in it — hopping between moods mid-lesson reads as a costume change, not a scene. board is the plain blackboard (the default); study is a warm late-night study; space is deep space; lab is a cold lab. Use it for the lesson's emotional register, never as decoration.",
+        "Set the atmosphere of the stage — the lighting and backdrop the board sits in. This is lighting, not content: the board, the grid and every prop stay exactly where they are, and it costs no clock time. Pick ONE atmosphere at the start of the lesson and stay in it — hopping between moods mid-lesson reads as a costume change, not a light change. board is the plain blackboard (the default); study is a warm late-night study; space is deep space; lab is a cold lab. Use it for the lesson's emotional register, never as decoration. Note: this verb is LIGHTING only — a prop's `scene` parameter on build/recall/stage_script names which BOARD it belongs to; they are different things, do not confuse them.",
       parameters: Type.Object({ mood: Type.Enum({ board: "board", study: "study", space: "space", lab: "lab" }) }),
     },
     { name: "highlight", description: "Draw attention without moving anything: pulse, outline, dim-rest, shake.", parameters: Type.Object({ target: str("prop id"), style: Type.Enum({ pulse: "pulse", outline: "outline", "dim-rest": "dim-rest", shake: "shake" }), seconds: Type.Optional(num("default 1.5")) }) },

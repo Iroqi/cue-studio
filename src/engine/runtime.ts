@@ -839,6 +839,8 @@ export class Stage {
       );
     }
     const scenes = [...c.scenes.entries()].map(([s, b]) => `${s}=(${Math.round(b.x)},${Math.round(b.y)} ${Math.round(b.w)}x${Math.round(b.h)})`).join(" ");
+    // 灯是账不是记忆：导演维持"一场一个气氛"的时候不用翻对话才记得起自己打过什么灯。
+    const mood = this.index.moodAt(t);
     const gate = this.currentGate();
     const staged = c.beats
       .map((b, i) => ({ b, i }))
@@ -857,6 +859,7 @@ export class Stage {
         ? `standing on board「${board}」— 换场会扫板：这一刀之前落下的东西，只有属于这块板的观众还看得见。要用别的板上的道具只有 recall 带过来；不写 scene 的 build 就落在脚下这块板，写了 scene 是把它挪到那块板上。接着讲同一块板用 pan，别用 transition。`
         : "还没换过场：台上就是一整张无限画布，换场前的东西全都还在眼前。不写 scene 的 build 落在脚下。要开新思路就 pan 一屏到空白处落笔，那不算是换场。",
       `scenes: ${scenes || "-"}`,
+      `light: ${mood}${mood === "board" ? "（黑板本相，还没打过灯）" : " — 打好的灯，别中途换"}`,
       `props on file (source not shown; fetch_prop to recall it):`,
       live.join("\n") || "  (empty)",
       c.beats.length > 1

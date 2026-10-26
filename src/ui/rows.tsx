@@ -78,7 +78,7 @@ export function describeOp(e: OpEntry, gates: Map<number, Gate>): string {
     }
     case "transition":
       return `换场 ${s("style")} → ${s("to")}`;
-    case "scene":
+    case "light":
       return `布景 ${s("mood")}`;
     case "highlight":
       return `highlight ${s("target")} ${s("style")}`;

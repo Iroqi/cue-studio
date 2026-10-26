@@ -107,7 +107,7 @@ function generator(seed: number) {
           break;
         case 10:
           // 换灯：不定板、不占时钟，只改"此刻台上是哪个气氛"那本账。
-          batch.push({ kind: "scene", mood: (["study", "space", "lab"] as const)[r(3)] });
+          batch.push({ kind: "light", mood: (["study", "space", "lab"] as const)[r(3)] });
           break;
         default:
           // 答一句：号随机指到前面某张卡。答过的那张再答一次也改不动（解释器那句 `said === null`），

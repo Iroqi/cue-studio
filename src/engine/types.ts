@@ -162,12 +162,14 @@ export interface TransitionOp {
 /**
  * 舞台的气氛：布光与背景，不是内容。板还是那块板、道具还在原处、镜头一个字不用动——变的只是
  * 台下的光。`board` 是黑板本相；`study` 深夜书房、`space` 深空、`lab` 实验室是三副定好的灯。
- * 一场一个气氛，别中途换来换去（和换场是两回事：`transition` 换板，`scene` 只换灯）。
+ * 一场一个气氛，别中途换来换去。和换场是两回事：`transition` 换板，`light` 只换灯。
+ * 动词名特意不叫 scene——stage_script/build/recall 的 `scene` 参数是板名，那才是换板，
+ * 两个名字在模型眼里不能长一个样。
  */
 export type Mood = "board" | "study" | "space" | "lab";
 
-export interface SceneOp {
-  kind: "scene";
+export interface LightOp {
+  kind: "light";
   mood: Mood;
 }
 
@@ -378,7 +380,7 @@ export type Op =
   | PauseOp
   | OfferOp
   | AnswerOp
-  | SceneOp;
+  | LightOp;
 
 export interface OpEntry {
   seq: number;

@@ -1000,7 +1000,7 @@ export class Interpreter {
           this.offers.push({ t: start, seq: entry.seq, label: op.label, phrase: op.phrase });
           break;
         }
-        case "scene": {
+        case "light": {
           // 布光不是换场：它不定板、不占时钟，只把台下的灯换掉——板还是这块板，道具与镜头一个字
           // 不动。记下"这一刻起台上是哪个气氛"，倒带回到这一刀之前就回到上一副灯。
           this.moodFlips.push({ t: start, mood: op.mood });

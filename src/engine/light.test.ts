@@ -13,16 +13,16 @@ import { describeOp } from "../ui/rows";
 import type { Op } from "./types";
 
 /*
- * `scene` 是舞台上唯一不占时钟的"环境"一刀：不定板、不动道具、不花时间，只把台下的灯换掉。
+ * `light` 是舞台上唯一不占时钟的"环境"一刀：不定板、不动道具、不花时间，只把台下的灯换掉。
  * 所以它和 transition 是两件事——幕布是换板的缝，灯是这一拍的光。这里钉的是三处：
  * 门不认的气氛要回退、换灯的账（moodAt）要按时刻翻、观众真的看见的差别（atmo 类名）。
  */
 
 const say = (text: string, duration = 1000): Op => ({ kind: "narrate", text, duration });
-const relight = (mood: "study" | "space" | "lab"): Op => ({ kind: "scene", mood });
+const relight = (mood: "study" | "space" | "lab"): Op => ({ kind: "light", mood });
 const tape = (...ops: Op[]) => ops.map((op, seq) => ({ seq, track: MAIN_TRACK, turn: 0, op }));
 
-describe("guard：scene 的气氛是枚枚举，不认的回退黑板本相", () => {
+describe("guard：light 的气氛是枚枚举，不认的回退黑板本相", () => {
   it("认得的 mood 原样过门，连对象都不换", () => {
     const op = relight("study");
     expect(guardOp(op)).toBe(op);
@@ -30,9 +30,9 @@ describe("guard：scene 的气氛是枚枚举，不认的回退黑板本相", ()
 
   it("不认的 mood 记一笔并回退 board，分享链接不会带着脏灯走", () => {
     const notes: string[] = [];
-    const out = guardOp({ kind: "scene", mood: "sunset" } as unknown as Op, (n) => notes.push(n));
-    expect(out).toMatchObject({ kind: "scene", mood: "board" });
-    expect(notes.join(" ")).toContain("scene.mood=sunset 不认");
+    const out = guardOp({ kind: "light", mood: "sunset" } as unknown as Op, (n) => notes.push(n));
+    expect(out).toMatchObject({ kind: "light", mood: "board" });
+    expect(notes.join(" ")).toContain("light.mood=sunset 不认");
   });
 });
 
@@ -44,10 +44,10 @@ describe("compile：换灯不定板、不占时钟，账按时刻翻", () => {
     expect(ix.moodAt(c.duration)).toBe("board");
   });
 
-  it("scene 不落 cue、不推时钟：两刀换灯之间没有多出一拍", () => {
+  it("light 不落 cue、不推时钟：两刀换灯之间没有多出一拍", () => {
     const c = compile(tape(relight("study"), say("书房里讲这句", 1200), relight("space")));
     const ix = new TapeIndex(c);
-    // 两刀 scene 都是零时长 —— 带子上只有那一句旁白在占时钟。
+    // 两刀 light 都是零时长 —— 带子上只有那一句旁白在占时钟。
     expect(c.cues.map((q) => q.op.kind)).toEqual(["narrate"]);
     expect(c.duration).toBe(c.cues[0].end);
     // 开场就换上的灯一直亮到旁白收笔；收笔那一刻换进深空（下一拍从这盏灯开始）。
@@ -79,7 +79,7 @@ describe("compile：换灯不定板、不占时钟，账按时刻翻", () => {
 });
 
 describe("rows：换灯在账本上留下一个字", () => {
-  it("describeOp 把 scene 报成布景", () => {
+  it("describeOp 把 light 报成布景", () => {
     expect(describeOp({ seq: 0, track: MAIN_TRACK, turn: 0, op: relight("space") }, new Map())).toBe("布景 space");
   });
 });
