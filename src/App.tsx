@@ -153,7 +153,8 @@ export default function App() {
   const dockRef = useRef<HTMLDivElement | null>(null);
   /** The band the camera has to clear — whatever the dock actually measures, never a guessed constant. */
   const [dockH, setDockH] = useState(150);
-  const [railOpen, setRailOpen] = useState(true);
+  /** 默认是演出：节拍条收起，整块画布给画面；要重演自己的课的人自己点开。 */
+  const [railOpen, setRailOpen] = useState(false);
   /** Offers the learner already clicked this session: one phrase per door, no double-send. */
   const [offersConsumed, setOffersConsumed] = useState<Set<number>>(new Set());
 
