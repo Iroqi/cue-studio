@@ -316,6 +316,9 @@ export function directorTools(
       case "transition":
         ops.push({ kind: "transition", style: S(args.style, "dissolve") as never, to: S(args.to), duration: N(args.seconds, 1.2) * 1000 });
         return { ops, result: `transition ${S(args.style)} -> ${S(args.to)}` };
+      case "scene":
+        ops.push({ kind: "scene", mood: S(args.mood, "board") as never });
+        return { ops, result: `lit as ${S(args.mood)} — atmosphere only, no board move, no clock cost` };
       case "highlight": {
         const miss = onStage(S(args.target));
         if (!miss.ok) return nope(miss.why);
@@ -538,6 +541,12 @@ export function directorTools(
     { name: "narrate", description: "Voice-over for a stretch of stage time. Narration is the clock: everything else runs on top of it. Pick how the line shows — caption types along the bottom, verse stages it as a statement in the middle of the board, voice says it and leaves the picture alone.", parameters: Type.Object({ text: str("the line, in the teacher's voice, no stage directions"), seconds: num("duration of this beat — a floor: say the line at a normal pace and if it does not fit, the beat grows instead of the voice"), style: Type.Optional(Type.Enum({ caption: "caption", verse: "verse", voice: "voice" }, { description: "default caption; verse for the one line you want staged, voice when the board already carries the idea and the ear should not be shown text" })) }), },
     { name: "beat", description: "Deliberate silence so a visual lands. Nothing moves.", parameters: Type.Object({ seconds: num("hold duration") }) },
     { name: "transition", description: "Move between scenes with a visible figure. The camera travels to the destination scene's bounds while the veil runs. Props you recalled appear on both sides of it.", parameters: Type.Object({ style: Type.Enum({ dissolve: "dissolve", wipe: "wipe", "match-cut": "match-cut", split: "split" }), to: str("destination scene name"), seconds: Type.Optional(num("default 1.2")) }) },
+    {
+      name: "scene",
+      description:
+        "Set the atmosphere of the stage — the lighting and backdrop the board sits in. This is lighting, not content: the board, the grid and every prop stay exactly where they are, and it costs no clock time. Pick ONE atmosphere at the start of the lesson and stay in it — hopping between moods mid-lesson reads as a costume change, not a scene. board is the plain blackboard (the default); study is a warm late-night study; space is deep space; lab is a cold lab. Use it for the lesson's emotional register, never as decoration.",
+      parameters: Type.Object({ mood: Type.Enum({ board: "board", study: "study", space: "space", lab: "lab" }) }),
+    },
     { name: "highlight", description: "Draw attention without moving anything: pulse, outline, dim-rest, shake.", parameters: Type.Object({ target: str("prop id"), style: Type.Enum({ pulse: "pulse", outline: "outline", "dim-rest": "dim-rest", shake: "shake" }), seconds: Type.Optional(num("default 1.5")) }) },
     {
       name: "motion",
