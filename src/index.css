@@ -261,6 +261,50 @@ button.x {
   opacity: 1;
 }
 
+/* ── 台下的光 ──────────────────────────────────────────────
+   `scene` 定下的气氛层：固定住整个台面，不跟镜头走——镜头推的是板，房间不动。
+   板与道具在它上面走，所以它是光、是底色、是窗口外的世界，不是内容。 */
+.atmo {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: opacity 400ms ease;
+}
+.atmo-board {
+  opacity: 0;
+}
+.atmo-study {
+  /* 深夜书房：顶上一盏暖灯，角落沉进影里。 */
+  background:
+    radial-gradient(130% 85% at 50% -6%, rgba(255, 178, 100, 0.17) 0%, rgba(255, 178, 100, 0) 46%),
+    linear-gradient(180deg, rgba(28, 22, 40, 0.42) 0%, rgba(10, 8, 16, 0.62) 100%);
+}
+.atmo-space {
+  /* 深空：一块够暗的底色，几颗钉住的星。 */
+  background:
+    radial-gradient(2px 2px at 14% 22%, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(1.5px 1.5px at 78% 14%, rgba(255, 255, 255, 0.45) 0%, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(1px 1px at 88% 68%, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(1.5px 1.5px at 34% 78%, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(140% 100% at 50% 0%, rgba(72, 56, 148, 0.26) 0%, rgba(72, 56, 148, 0) 58%),
+    linear-gradient(180deg, #0a0916 0%, #05060d 100%);
+}
+.atmo-lab {
+  /* 实验室：冷白顶光加一丝青，像无影灯下的操作台。 */
+  background:
+    radial-gradient(130% 95% at 50% -8%, rgba(90, 208, 196, 0.13) 0%, rgba(90, 208, 196, 0) 45%),
+    linear-gradient(180deg, rgba(14, 20, 26, 0.5) 0%, rgba(7, 11, 15, 0.66) 100%);
+}
+/* 镜头之外的角落沉进影里：四角渐暗，观众的眼睛留在板上。字幕与操作层在它之上，永远清晰。 */
+.stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  box-shadow: inset 0 0 180px 24px rgba(2, 1, 8, 0.55);
+}
+
 .prop {
   position: absolute;
   color: var(--fg);
@@ -660,19 +704,6 @@ button.x {
   50% {
     opacity: 0;
   }
-}
-
-.telemetry {
-  position: absolute;
-  left: 20px;
-  /* below the transport row (13 → 53): parked at 44 it sat half-swallowed by the play bar */
-  top: 58px;
-  z-index: 3;
-  pointer-events: none;
-  color: #6e6888;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  font-variant-numeric: tabular-nums;
 }
 
 .gate {

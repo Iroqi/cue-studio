@@ -5,7 +5,7 @@ import { StandingIndex, restand } from "./standing";
 import { displaced, motionOffset } from "./motion";
 import { rhythmLine } from "./pace";
 import { SETTLE_MS } from "./speech";
-import type { Box, Compiled, Cue, Gate, MotionOp, Op, OpEntry, Revision, Scene3DSpec, TrackId } from "./types";
+import type { Box, Compiled, Cue, Gate, Mood, MotionOp, Op, OpEntry, Revision, Scene3DSpec, TrackId } from "./types";
 
 /** A cut the clock has already walked through the veil of. */
 type Cut = { flip: number; board: string };
@@ -35,6 +35,8 @@ export interface RenderState {
   props: VisibleProp[];
   narration: { text: string; progress: number; reveal: number; duration: number; style: string } | null;
   veil: { style: string; progress: number } | null;
+  /** 台上的气氛：`scene` 定下的灯；没换过就是 `board`。和 veil 是两件事——幕布是换板的缝，灯是这拍的光。 */
+  mood: Mood;
   gate: Gate | null;
   /** His own words for the card the playhead is standing in. On the tape, so a shared or replayed lesson carries the dialogue and not only the lecture. */
   said: string | null;
@@ -797,6 +799,7 @@ export class Stage {
           }
         : null,
       veil: veil ? { style: (veil.op as { style: string }).style, progress: (t - veil.t) / Math.max(veil.end - veil.t, 1) } : null,
+      mood: this.index.moodAt(t),
       gate: this.currentGate(),
       said: this.cardAt(t)?.said ?? null,
       askedGate: this.pending.size ? Math.min(...this.pending.keys()) : null,

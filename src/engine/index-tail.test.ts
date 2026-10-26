@@ -72,7 +72,7 @@ function generator(seed: number) {
     const n = 1 + r(5);
     for (let i = 0; i < n; i++) {
       const id = ids[r(ids.length)];
-      switch (r(11)) {
+      switch (r(12)) {
         case 0:
           batch.push(placed(id, r(6000) - 2000, r(3) === 0 ? boards[r(boards.length)] : undefined));
           break;
@@ -104,6 +104,10 @@ function generator(seed: number) {
         case 9:
           batch.push(hold("等他把话说完"));
           asked++;
+          break;
+        case 10:
+          // 换灯：不定板、不占时钟，只改"此刻台上是哪个气氛"那本账。
+          batch.push({ kind: "scene", mood: (["study", "space", "lab"] as const)[r(3)] });
           break;
         default:
           // 答一句：号随机指到前面某张卡。答过的那张再答一次也改不动（解释器那句 `said === null`），
@@ -139,6 +143,7 @@ function answersOf(ix: TapeIndex, t: number): string {
     `prev:${ix.prevSpokenStart(t, 4000)}`,
     `hl:${[...ix.highlightsAt(t).entries()].sort().map(([k, v]) => k + v).join("|")}`,
     `mo:${ix.motionFor("a", t)?.t ?? "-"},${ix.motionFor("b", t)?.t ?? "-"}`,
+    `mood:${ix.moodAt(t)}`,
     `card:${ix.cardAt(t)?.seq ?? "-"}`,
     // 三本只随卡表状态变的账：开卡表是这本索引上唯一会被中间改动的账，续排与新建必须答一样。
     `open:${ix.openGateSeqs().join(",")}`,

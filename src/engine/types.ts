@@ -159,6 +159,18 @@ export interface TransitionOp {
   duration: number;
 }
 
+/**
+ * 舞台的气氛：布光与背景，不是内容。板还是那块板、道具还在原处、镜头一个字不用动——变的只是
+ * 台下的光。`board` 是黑板本相；`study` 深夜书房、`space` 深空、`lab` 实验室是三副定好的灯。
+ * 一场一个气氛，别中途换来换去（和换场是两回事：`transition` 换板，`scene` 只换灯）。
+ */
+export type Mood = "board" | "study" | "space" | "lab";
+
+export interface SceneOp {
+  kind: "scene";
+  mood: Mood;
+}
+
 export interface HighlightOp {
   kind: "highlight";
   target: string;
@@ -365,7 +377,8 @@ export type Op =
   | DragOp
   | PauseOp
   | OfferOp
-  | AnswerOp;
+  | AnswerOp
+  | SceneOp;
 
 export interface OpEntry {
   seq: number;
@@ -513,6 +526,11 @@ export interface Compiled {
   beats: Beat[];
   /** Doors the director opened, in tape order: `{t, seq, label, phrase}` — see `OfferView`. */
   offers: OfferView[];
+  /**
+   * 换过几次灯，按落刀时刻只长尾巴：`{t, mood}`。`scene` 不定板、不占时钟，所以它不进 cue 表——
+   * "这一刻台上是哪个气氛"这一问，读的就是这本账（`TapeIndex.moodAt`）。
+   */
+  moodFlips: { t: number; mood: Mood }[];
   duration: number;
   lastSeq: number;
   /**

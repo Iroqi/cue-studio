@@ -382,8 +382,6 @@ export function StageView({ stage, bottomInset = 0, onPick, onDragAnswer }: { st
   const scale = Math.min(usable.w / rect.w, usable.h / rect.h);
   const ox = (usable.w - rect.w * scale) / 2 - rect.x * scale;
   const oy = (usable.h - rect.h * scale) / 2 - rect.y * scale;
-  const three = s.props.filter((p) => p.scene3d).length;
-  const drag3d = s.props.some((p) => p.scene3d?.interactive);
   // `dim-rest` names one prop and dims the *rest*, so the mark has to go on the board, not the prop.
   const dimRest = s.props.some((p) => p.highlight === "dim-rest");
   // 揭晓那一刀（按词步进）只跟旁白有关：没有旁白时它是 0，有旁白时两种样式共用同一刀。
@@ -391,6 +389,8 @@ export function StageView({ stage, bottomInset = 0, onPick, onDragAnswer }: { st
 
   return (
     <div className="stage" data-track={s.track} ref={hostRef}>
+      {/* 台下的光：scene 定下的气氛层。它不跟镜头走——镜头推的是板，房间不动。 */}
+      <div className={`atmo atmo-${s.mood}`} aria-hidden />
       <div
         className={`world${dimRest ? " dim-rest" : ""}`}
         style={{ transform: `translate(${ox}px, ${oy}px) scale(${scale})` }}
@@ -441,11 +441,6 @@ export function StageView({ stage, bottomInset = 0, onPick, onDragAnswer }: { st
           </span>
         </div>
       )}
-      <div className="telemetry">
-        {s.props.length} props{three ? ` · ${three} 3D${drag3d ? "（可拖动·转动不进分享）" : ""}` : ""} · t={Math.round(s.t)}ms
-        {s.track === "main" ? "" : ` · ${s.track}`}
-        {s.artWait ? ` · 时钟等美工（欠 ${s.artOwed} 格）` : ""}
-      </div>
     </div>
   );
 }

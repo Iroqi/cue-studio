@@ -1,5 +1,5 @@
 import { ownsTime } from "./compile";
-import type { Compiled, Cue, Gate } from "./types";
+import type { Compiled, Cue, Gate, Mood } from "./types";
 /*
  * 时钟每一帧问带子的，全是同一类问题：这一刻哪一格还在跑。带子是只增不改的序列，一条 cue 落下去
  * 之后就不再动 —— 所以这些答案可以在带子排好的那一刻算一次，不必每走一格重扫整卷。
@@ -114,6 +114,11 @@ export class TapeIndex {
   private readonly flips: number[] = [];
   private readonly boards: string[] = [];
 
+  /** 换过的灯：`scene` 不定板、不占时钟，只有这一本"此刻台上是哪个气氛"的账（见 `moodAt`）。 */
+  private readonly moodT: number[] = [];
+  private readonly moods: Mood[] = [];
+  private absorbedMoods = 0;
+
   private readonly motionById = new Map<string, Cue[]>();
 
   /** 卡片按 `t` 递增；开卡表按下标升序，表头就是全带最早那张没答的。 */
@@ -148,6 +153,7 @@ export class TapeIndex {
     this.camMaxEnd = [];
     this.absorbCues();
     this.absorbGates();
+    this.absorbMoods();
   }
 
   /** 把 cue 表新长的那一截分进各条窄表。 */
@@ -155,6 +161,31 @@ export class TapeIndex {
     const cues = this.compiled.cues;
     for (let i = this.absorbedCues; i < cues.length; i++) this.absorb(cues[i]);
     this.absorbedCues = cues.length;
+  }
+
+  /** 换过的灯不占时钟、不在 cue 表里，单独从 `moodFlips` 进账（和卡表同一句"只长尾巴"）。 */
+  private absorbMoods(): void {
+    const flips = this.compiled.moodFlips;
+    for (let i = this.absorbedMoods; i < flips.length; i++) {
+      this.moodT.push(flips[i].t);
+      this.moods.push(flips[i].mood);
+    }
+    this.absorbedMoods = flips.length;
+  }
+
+  /**
+   * 这一刻台上是哪个气氛：最后那一次 `scene` 定下的灯；一场都没换过就是黑板本相。
+   * `moodT` 按落刀时刻递增（带子只增不改），二分即可。
+   */
+  moodAt(t: number): Mood {
+    let lo = 0;
+    let hi = this.moodT.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.moodT[mid] <= t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo === 0 ? "board" : this.moods[lo - 1];
   }
 
   /**
@@ -243,6 +274,7 @@ export class TapeIndex {
     this.compiled = compiled;
     this.absorbCues();
     this.absorbGates();
+    this.absorbMoods();
   }
 
   /**

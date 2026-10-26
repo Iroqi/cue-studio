@@ -6,6 +6,7 @@ import type {
   Compiled,
   Cue,
   Gate,
+  Mood,
   NarrateOp,
   OfferView,
   Op,
@@ -514,6 +515,8 @@ export class Interpreter {
   private readonly gates: Gate[] = [];
   private readonly beats: Beat[] = [];
   private readonly offers: OfferView[] = [];
+  /** 换过几次灯，按落刀时刻只长尾巴：`scene` 不定板、不占时钟，所以只记这本账，不进 cue 表。 */
+  private readonly moodFlips: { t: number; mood: Mood }[] = [];
   /**
    * 每一刀镜头落在哪一刻，按 op 引用记。带子只增不改，所以"这一刀问的是哪一刻"在排好的那一刻就该
    * 有答案 —— 那一问以前写成 `cues.find((c) => c.op === askedBy)`，而它的用法恰恰是**找不到才说话**，
@@ -997,6 +1000,12 @@ export class Interpreter {
           this.offers.push({ t: start, seq: entry.seq, label: op.label, phrase: op.phrase });
           break;
         }
+        case "scene": {
+          // 布光不是换场：它不定板、不占时钟，只把台下的灯换掉——板还是这块板，道具与镜头一个字
+          // 不动。记下"这一刻起台上是哪个气氛"，倒带回到这一刀之前就回到上一副灯。
+          this.moodFlips.push({ t: start, mood: op.mood });
+          break;
+        }
         case "beat": {
           this.pushCue({ t: start, end: start + cueMs(op), op, from: this.cursor, to: this.cursor });
           break;
@@ -1064,6 +1073,7 @@ export class Interpreter {
       gates: this.gates,
       beats: this.beats,
       offers: this.offers,
+      moodFlips: this.moodFlips,
       duration: Math.max(this.t, this.tails),
       lastSeq: this.lastSeq,
       touched: this.touched,
