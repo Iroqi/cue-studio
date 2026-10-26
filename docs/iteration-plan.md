@@ -840,3 +840,75 @@ offer 分支，checkout 会把整分支删光）：
 （oxlint 跨函数追到 `onClick → handleOffer → sendText → teacher()` 链上对 `globalThis.__teacher`
 的写）。`__teacher` 全仓零读者（测试只依赖 `__stage`），是前几轮留下的死调试钩子，顺手删掉；
 oxlint 回到基线 2 条警告（BeatRail exhaustive-deps + App refs，均非本轮引入）。
+
+# 第九轮 brainstorm（2026-10-26）：这一轮不开门 —— 两问之间得有一句旁白
+
+## 前八轮走到哪了
+
+openui 那份拆解上的清单已经逐块落地：受限界面语言 / 流式呈现（op 日志 + 解释器，一开始就有）、
+组件清单（quiz 认、probe 点、dial 拨、type 说、drag 搬）、交互不付费（点击/拨杆/拖动/offer 按下
+都不算 tokens）、rough edges（`pause-for` 把静说破、guard 听筒 notes）、设计原则（逃生门、trust the
+user、账目条）、Actions / issueNewTurn（offer 门）。前八轮的动作全是**加**：加卡、加门、加一行账。
+
+只剩最后一条不是组件、而是**判断**：**restraint** —— 模型学会了什么时候不加交互；"加东西容易，
+忍住不加难"。它在 Cue Studio 里的对应物不是"少画一块板"，是**少停一次表**：五张卡每张都把时钟
+停住，停表是台上最贵的一件事（旁白停了、画面不动、学习者被按在原地）。而回执从来只说
+`question queued` —— "问完立刻再问"和"讲了三分钟再问"听起来一模一样。带子一直记着这两者的差别，
+缺的只是把它说出口。
+
+## 选定：让带子把"连问"说给导演听（`engine/pace.ts`）
+
+规则一句话，且完全从带子派生：**上一问落下之后，到带子尽头为止，一句旁白也没有** → 这一刀是"连着
+他考"，回执后面加一句 `RESTRAINT`。它不是禁止（连着两问可以是有意的并置考法），是让导演在决定
+下一步时知道这笔代价。
+
+不新增任何 op、不改判分、不动门、不进带子：
+- 第一问永远不算连问（他还没被问过）；
+- `pause_for` 不是题：自己不算问过，也挡不住下一问；
+- 量的是**带子尽头**，不是播放头 —— 倒回三分钟不改变节奏；
+- 一句话讲在上一问之前不算"两问之间"（`sinceMs = lastLineEnd - lastAskAt`，末尾正好等于上一问
+  起点时仍是 0）。
+
+## 落地形状
+
+- `Compiled` 多三个增量游标：`asked` / `lastAskAt` / `lastLineEnd`。compile 在 gate 分支维护前两个
+  （`pause-for` 除外）、在 narrate 分支维护最后一个；`result()` 一并交出。以前要答这一问得从带子
+  尽头扫一遍卡表 / cue 表（每问一次），现在只读三个数。
+- `engine/pace.ts`：`RESTRAINT`（措辞钉在测试里）、`Rhythm`、`rhythm()`、`restraintNote()`、
+  `rhythmLine()`（快照里的正面说法）。
+- `tools/director.ts`：`DirectorResult.note` 与 `result` 分开 —— 停表的卡要先等学习者，`execute()`
+  到手的是 `question queued`，真正回给导演的是他答完之后那一句，节奏得跟着那一句走。五张卡通过
+  `card()` 挂上；`question queued` 前缀不动（主循环靠它认卡）。
+- `agent/loop.ts`：两条回执路径（停表结算 / 普通）都把 `note` 拼在末尾，与 corrected、blind 同一块。
+- `engine/runtime.ts`：`agentSnapshot` 多一行 `tape rhythm:` —— 还没落笔的那一问也看得见。
+- `agent/prompt.ts`：教学纪律加一条"停表也是一种成本……一次停表只探一个 concept"。
+
+## 三层测试设计
+
+- 形状：第一问不点名；背靠背点名（同一刻两张卡也算）；中间一句旁白不点名（旁白末尾等于上一问
+  起点仍算没讲）；静默不是讲课；`pause_for` 不算题；播放头无关；`rhythm` 三个数与 `rhythmLine`。
+- 价钱：Proxy 数读格 —— 4 题与 160 题的带子问同一句，`gates`/`cues`/`beats` 都读 0 格；反向证明
+  "整条扫一遍"那种读法在同一批带子上确实读得到；40 条随机带子 × 24 次追加，三个游标与全扫逐刻同解。
+- 护栏：五张卡都带 note、干净的一问一个字不多；前缀不变、带子上没有"节奏"；快照有这一行；
+  scripted 循环里第一张卡的回执干净、第二张带 `RESTRAINT`。
+
+## 实测与反向验证（同一轮补完）
+
+`src/engine/pace.test.ts` 14 条新，全套 493 → 507 条绿；tsc 与 build 干净；oxlint 0 warnings
+（比基线还少两条，仓库里那两条旧警告在这台机器的规则集下已不再报）。
+
+同族 flaky 记录：全套并行跑时 `camera-moment.test.ts` 的倍率门（`< 3`）红过一次（3.58；单跑 18
+条全绿，重跑全套也全绿）。它与第六、七、八轮记录的毫秒门同类 —— 只在机器满负荷时偶发，非本轮引入。
+
+反向验证五刀（改后代码上做，跑完精确还原；不用 `git checkout`，guard 基线没有这条分支）：
+- M1 `rhythm()` 的 `sinceMs` 不减 `lastAskAt` —— 4 条红（数字、价钱、对账、快照）。
+- M2 compile 不再在 narrate 分支推进 `lastLineEnd` —— 7 条红（所有"讲过没有"的判断失去依据）。
+- M3 `card()` 在干净的一问上也挂话 —— 2 条红（五张卡的干净分支、scripted 回执）。
+- M4 停表结算回执吞掉 `out.note` —— 1 条红（"第二张卡的回执带着它"）。
+- M5 `agentSnapshot` 把 `tape rhythm:` 标签换掉 —— 1 条红。
+
+这一轮的首稿里还出过三处自己的错，都是先跑红才改对的：`card()` 定义在 `run()` 外面却引用里面的
+`ops`（ReferenceError，门全都没落成）；一条本该断言 `null` 的句子写成了恒等三元式（永远 undefined）；
+五张卡的 fixture 只建了一张道具，`point_at` / `drag` 被前置条件正常拦下。教训同前几轮：**先让测试
+红一次**，绿灯才知道自己护的是哪一行。
+

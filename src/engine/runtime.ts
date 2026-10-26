@@ -3,6 +3,7 @@ import { MAIN_TRACK, OpLog } from "./log";
 import { TapeIndex, reindex } from "./frame";
 import { StandingIndex, restand } from "./standing";
 import { displaced, motionOffset } from "./motion";
+import { rhythmLine } from "./pace";
 import { SETTLE_MS } from "./speech";
 import type { Box, Compiled, Cue, Gate, MotionOp, Op, OpEntry, Revision, Scene3DSpec, TrackId } from "./types";
 
@@ -845,6 +846,10 @@ export class Stage {
       // The rect, not just its centre: to build in the empty space the camera just slid to, the
       // director has to know what is inside the frame, and a centre point alone can't be placed in.
       `stage clock: ${Math.round(this.t)}ms / ${Math.round(c.duration)}ms, camera sees=(${Math.round(this.rect.x)},${Math.round(this.rect.y)} ${Math.round(this.rect.w)}x${Math.round(this.rect.h)}) zoom=${(1600 / this.rect.w).toFixed(2)}`,
+      // 带子尽头的节奏，不是播放头的：导演这一刀追加在带子尾巴上，"上一问之后讲过没有"问的是尾巴上那一句。
+      // 它是 `engine/pace.ts` 里同一个数 —— 卡片回执上那句"两问之间没有一句旁白"用的就是它，两处不许
+      // 各自算一遍。
+      rhythmLine(c),
       board
         ? `standing on board「${board}」— 换场会扫板：这一刀之前落下的东西，只有属于这块板的观众还看得见。要用别的板上的道具只有 recall 带过来；不写 scene 的 build 就落在脚下这块板，写了 scene 是把它挪到那块板上。接着讲同一块板用 pan，别用 transition。`
         : "还没换过场：台上就是一整张无限画布，换场前的东西全都还在眼前。不写 scene 的 build 落在脚下。要开新思路就 pan 一屏到空白处落笔，那不算是换场。",

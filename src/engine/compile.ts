@@ -520,6 +520,14 @@ export class Interpreter {
    * 于是每一刀点一次名把整张 cue 表走完一遍。见 `Compiled.shotAt`。
    */
   private readonly shotAt = new Map<CameraOp, number>();
+  /**
+   * 节奏那三个游标（`Compiled.asked/lastAskAt/lastLineEnd`）。问它的是"两问之间有没有一句旁白"——
+   * 导演每开一张卡都要问一次，而答案在落笔的那一刻就有了。以前这一问要么扫整张卡表、要么从带子
+   * 尽头往回走，价钱是"这一堂课问过几道题"，与"这一问"无关。
+   */
+  private asked = 0;
+  private lastAskAt = -1;
+  private lastLineEnd = 0;
   // A card is looked up by `seq` twice: once when the learner's answer arrives, once when the beats are
   // closed off to find the window it was asked in. Both are keyed here rather than scanned, because a
   // scan makes a tape with many cards cost one pass over all of them *per card* — which is the same
@@ -937,6 +945,9 @@ export class Interpreter {
         case "highlight":
         case "motion": {
           this.pushCue({ t: start, end: start + cueMs(op), op, from: this.cursor, to: this.cursor });
+          // 一句旁白讲到了哪一刻：节奏那一问只读这一个数（见 `Compiled.lastLineEnd`）。记的是 cue 的
+          // 右端而不是落笔那一刻 —— 两问之间隔着一句没讲完的话，那句话仍然会落在他耳朵里。
+          if (op.kind === "narrate") this.lastLineEnd = start + cueMs(op);
           if (op.kind === "transition") {
             // Reserve the ground before anything is looked for on it, so a board cut to twice keeps the
             // same place and `recall`ing onto it is not relative to where the camera last stood.
@@ -964,6 +975,12 @@ export class Interpreter {
           this.gates.push(gate);
           this.gateBySeq.set(entry.seq, gate);
           this.openGates.push(gate);
+          // `pause_for` 不是题（和 `scoreOf` 同一句）：它停表，但不问任何东西。所以「问 → 按继续 →
+          // 立刻再问」仍然是连问 —— 他要按一下才走的那一扇门不替他挡第二次考。
+          if (op.kind !== "pause-for") {
+            this.asked++;
+            this.lastAskAt = start;
+          }
           break;
         }
         case "answer": {
@@ -1051,6 +1068,9 @@ export class Interpreter {
       lastSeq: this.lastSeq,
       touched: this.touched,
       shotAt: this.shotAt,
+      asked: this.asked,
+      lastAskAt: this.lastAskAt,
+      lastLineEnd: this.lastLineEnd,
     };
   }
 }

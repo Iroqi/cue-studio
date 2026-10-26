@@ -4,6 +4,7 @@ import type { Box, MotionMode, NarrateOp, Op } from "../engine/types";
 import type { Stage } from "../engine/runtime";
 import { cueMs } from "../engine/compile";
 import { guardScene3 } from "../engine/guard";
+import { restraintNote } from "../engine/pace";
 
 const MOTION_MODES = new Set(["oscillate", "approach", "orbit", "iterate", "flow"]);
 
@@ -83,6 +84,11 @@ export interface DirectorResult {
   ops: Op[];
   /** Text returned to the model. */
   result: string;
+  /**
+   * 带子自己的话，拼在回执后面（`agent/loop.ts` 拼）。和 `result` 分开是因为一张停表的卡要先等学习者：
+   * `execute()` 到手的是 `question queued`，真正回给导演的是他答完之后那句话 —— 节奏得跟着那一句走。
+   */
+  note?: string;
   /** stage_script only: placeholder frames that carry a painter's brief, in beat order. */
   paintBriefs?: { id: string; brief: string; scene?: string }[];
   isError?: boolean;
@@ -147,6 +153,14 @@ export function directorTools(
 
   const run = (name: string, args: Record<string, unknown>): DirectorResult => {
     const ops: Op[] = [];
+    /**
+     * 一张停表的卡落笔时，带子自己要说的那句话：两问之间有没有一句旁白（见 `engine/pace.ts`）。
+     *
+     * 读的是**这一刀落下之前**的带子 —— `run()` 返回之后 `loop.execute()` 才 append，所以这里问到的正是
+     * "上一问之后讲过没有"。它不改 op、不改结果文本的前缀（主循环靠 `question queued` 认停表的卡），
+     * 只是把一句事实挂在回执后面，等学习者答完才交给导演 —— 那正是他决定下一步的时候。
+     */
+    const card = (result: string): DirectorResult => ({ ops, result, note: restraintNote(stage.compiled) ?? undefined });
     switch (name) {
       case "stage_script": {
         const briefs: { id: string; brief: string; scene?: string }[] = [];
@@ -328,7 +342,7 @@ export function directorTools(
       }
       case "ask_learner":
         ops.push({ kind: "quiz", prompt: S(args.prompt), options: A(args.options).map((o) => S(o)), answer: N(args.answer, 0), why: args.why ? S(args.why) : undefined, concept: args.concept ? S(args.concept) : undefined });
-        return { ops, result: "question queued; the stage clock stops until the learner answers" };
+        return card("question queued; the stage clock stops until the learner answers");
       case "point_at": {
         // The learner taps the part on the board instead of reading a text card. Every candidate has
         // to be standing *right now* — a tap target that is offstage or swept away is a button that
@@ -344,7 +358,7 @@ export function directorTools(
         const answer = S(args.answer);
         if (!targets.includes(answer)) return nope(`point_at 的正确答案「${answer}」不在可点目标里（${targets.join("、")}）。他点不到一个对的东西，这题就是坏的。`);
         ops.push({ kind: "probe", prompt: S(args.prompt), targets, answer, why: args.why ? S(args.why) : undefined, concept: args.concept ? S(args.concept) : undefined });
-        return { ops, result: `question queued; the clock stops and the learner taps one of ${targets.join("、")} on the board — tell them where to look, do NOT list text options.` };
+        return card(`question queued; the clock stops and the learner taps one of ${targets.join("、")} on the board — tell them where to look, do NOT list text options.`);
       }
       case "tune": {
         // The third card: he drags a number out of a range. A range the learner cannot even drag the
@@ -371,7 +385,7 @@ export function directorTools(
           why: args.why ? S(args.why) : undefined,
           concept: args.concept ? S(args.concept) : undefined,
         });
-        return { ops, result: `question queued; the clock stops and he drags a slider across [${min}, ${max}]${args.unit ? " " + S(args.unit) : ""} and confirms — his set value comes back as the answer, graded within ±${tol}${args.unit ? " " + S(args.unit) : ""}. Use this for estimation ("猜一下这个频率/角度/质量"), NOT for recognition.` };
+        return card(`question queued; the clock stops and he drags a slider across [${min}, ${max}]${args.unit ? " " + S(args.unit) : ""} and confirms — his set value comes back as the answer, graded within ±${tol}${args.unit ? " " + S(args.unit) : ""}. Use this for estimation ("猜一下这个频率/角度/质量"), NOT for recognition.`);
       }
       case "type": {
         // The fourth card: he types the term. A card with no required word has no right answer, same as
@@ -389,7 +403,7 @@ export function directorTools(
           why: args.why ? S(args.why) : undefined,
           concept: args.concept ? S(args.concept) : undefined,
         });
-        return { ops, result: `question queued; the clock stops and he types a short answer in the box — graded correct only when his text contains EVERY one of: ${accept.join("、")}. His exact words still come back to you; use this for "say the term / one-sentence explanation", NOT for multiple choice.` };
+        return card(`question queued; the clock stops and he types a short answer in the box — graded correct only when his text contains EVERY one of: ${accept.join("、")}. His exact words still come back to you; use this for "say the term / one-sentence explanation", NOT for multiple choice.`);
       }
       case "drag": {
         // The fifth card: he moves a prop on the board to a place. A target he cannot reach is a broken
@@ -415,7 +429,7 @@ export function directorTools(
           why: args.why ? S(args.why) : undefined,
           concept: args.concept ? S(args.concept) : undefined,
         });
-        return { ops, result: `question queued; the clock stops and the learner moves 「${lbl}」 on the board to (${x}, ${y}) and confirms — his placement comes back as the answer (world units of the prop's centre), graded within ±${tol} world units. Use this for "move the thing to the place / act it out on the board" (「把 b 的头搬到 a 的头上」), NOT for recognition, estimation or typing.` };
+        return card(`question queued; the clock stops and the learner moves 「${lbl}」 on the board to (${x}, ${y}) and confirms — his placement comes back as the answer (world units of the prop's centre), graded within ±${tol} world units. Use this for "move the thing to the place / act it out on the board" (「把 b 的头搬到 a 的头上」), NOT for recognition, estimation or typing.`);
       }
       case "pause_for":
         ops.push({ kind: "pause-for", reason: S(args.reason) });

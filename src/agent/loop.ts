@@ -688,10 +688,13 @@ export class Teacher {
       this.stage.setDebtSuspended(false);
       this.parkedGate = null;
       if (answer === null) return { result: "（这一拍撤了下来，学习者没有作答）", isError: true };
-      return { result: `${this.settleGate(seq, answer)}${corrected}` };
+      // 节奏那句挂在**答完之后**这一条上：卡停在台上时导演的下一句话就是"接下来怎么演"，
+      // 而"你刚才那一问之前一句旁白都没有"正是他决定下一步时该看见的事实（见 `engine/pace.ts`）。
+      return { result: `${this.settleGate(seq, answer)}${corrected}${out.note ? `\n${out.note}` : ""}` };
     }
-    const note = this.blindCamera(out.ops);
-    return note ? { ...out, result: `${out.result}${corrected}\n${note}` } : corrected ? { ...out, result: `${out.result}${corrected}` } : out;
+    const blind = this.blindCamera(out.ops);
+    const extras = [corrected, out.note ?? "", blind ?? ""].filter(Boolean).join("\n");
+    return extras ? { ...out, result: `${out.result}${extras}` } : out;
   }
 
   /**
