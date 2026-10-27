@@ -24,7 +24,8 @@ function frac(n: number): string {
  * 空问题不是一次误触 —— 它就是"指一下，换个讲法"那扇最短的门。
  */
 export function pointedMessage(label: string, at: PointAt, question = ""): string {
-  const who = label.trim() || "那件东西";
+  // 道具标签是导演写的，可能带换行或连排空白 —— 压成单空格再嵌进句子，别让消息格式断行。
+  const who = label.trim().replace(/\s+/g, " ") || "那件东西";
   const spot = `台上的「${who}」这一点（x=${frac(at.x)}，y=${frac(at.y)}）`;
   const q = question.trim();
   return q ? `我指着${spot}问：${q}` : `我指着${spot}—— 这里没懂，换个讲法。`;

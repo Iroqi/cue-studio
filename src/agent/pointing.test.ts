@@ -24,6 +24,14 @@ describe("指着问的那一句话", () => {
     expect(pointedMessage("向量 b", { x: 0.5, y: 0.5 }, "  这是什么  ")).toContain("问：这是什么");
   });
 
+  it("label 里的换行和连排空白压成单空格：导演收到的不许是断成两行的句子", () => {
+    expect(pointedMessage("向量 b\n（就是那条蓝的）", { x: 0.5, y: 0.5 }, "为什么？")).toContain(
+      "「向量 b （就是那条蓝的）」",
+    );
+    expect(pointedMessage("a    b\tc", { x: 0.5, y: 0.5 })).toContain("「a b c」");
+    expect(pointedMessage("a\n", { x: 0.5, y: 0.5 })).not.toMatch(/\n/);
+  });
+
   it("坐标夹在 0..1、两位小数：他点在框外也不会把导演送到板外", () => {
     expect(pointedMessage("a", { x: -1, y: 2 })).toContain("x=0.00，y=1.00");
     expect(pointedMessage("a", { x: 0.123, y: 0.987 })).toContain("x=0.12，y=0.99");
