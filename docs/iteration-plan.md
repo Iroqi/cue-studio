@@ -912,3 +912,50 @@ user、账目条）、Actions / issueNewTurn（offer 门）。前八轮的动作
 五张卡的 fixture 只建了一张道具，`point_at` / `drag` 被前置条件正常拦下。教训同前几轮：**先让测试
 红一次**，绿灯才知道自己护的是哪一行。
 
+
+# 第十轮 brainstorm（2026-10-27）：他自己指着一处问，不是等导演开门
+
+## 前九轮走到哪了
+
+九轮下来，学习者能碰的东西已经排成一条线：quiz 认、probe 点、dial 拨、type 说、drag 搬、两句逃生词、一条账目条、一扇 offer 门。可这条线上的每一个动作都从导演那一头发起 —— 他点、他拨、他搬，是因为**导演先开了一张卡**；他按 offer，是因为**导演先开了一扇门**。学习者自己有问题的时候，板上那处地方仍然只是一幅画：他可以在 console 打「这里没懂」，但"这里"没有位置；要说明白只能写"左边那个箭头的尾巴附近"，而这段描述本身就可能已经说错了。
+
+Intelligent UI 的拆解里有一句一直没在仓库里落过：交互状态在本地、不必每动一下就叫一次模型（local interaction state without model calls）。指认正好是这种动作 —— 界面先接住"他指的是哪儿"，要不要发、发什么仍由他决定。它也补上了 direct manipulation 的另一半：drag 是导演让他**做**，指着问是他自己**指**；两者都不该把界面动作当成一次隐藏的模型调用。
+
+## 选定：指着问（不新增 op、不新增动词、不新增卡）
+
+- **入口**：传输栏一枚「指着问」开关，只在 live 时出现；按下后台上每一件可见道具都接住点击。它不是第 22 个动词、不是又一张停表的卡、不落新 op。
+- **换算**：屏幕点 → 世界点 → 那件道具**自身框**里的 0..1（x 向右、y 向下），和 `camera.at` 同一套单位。夹进 0..1，出口留两位小数。
+- **落点**：点完后模式收起，板上留一枚琥珀色十字圈；console 上方出现 chip「指着「向量 b」」，可写问题，也可一键「这里没懂」。
+- **发送**：`speak` / `askPointed` 都走既有的 `sendText` —— 和打字、offer 同一条 `respond()` 路径。消息形如 `我指着台上的「向量 b」这一点（x=0.50，y=0.25）问：这里怎么来的？`，空问题则是 `……—— 这里没懂，换个讲法。`；没有"来自界面"的标记。
+- **不落带**：指认是学习者状态，和 3D 窗的拖动角度、drag 途中道具的位移同一本账。不进日志、不进分享链接、不进档案、不判分、不停表，也不叫模型。导演若用 `camera target=… at=… span=…` 怼近那一处，那一刀镜头才是可重放的那一笔。
+- **让路**：卡开着、或已排好且表正在走向它（`askedGate`）时，指着问禁用 —— 停表时板上的点击属于 probe / drag；录像（`live=false`）不接指认；指过的东西被 `discard`/换场/倒带带走，`pointedNow` 的派生条件自己失效。
+- **提示词**：教学纪律加一条 —— 他指了哪儿就先 `camera` 到哪儿（`at` 原样用、`span` 收小），只回答那一点；「这里没懂」换一种载体重演那一点，别复述原话、别重讲整块板。
+
+被否掉的形状：把它做成第 22 个导演动词（指认不是演出，只有他发出去的那句话才是）；把坐标做成 console 里的一个文本输入框（那又回到了"描述位置"）；把它做成又一张停表的卡（他没在答题，他在提问）。前九轮的教训是同一个：**先问这一刀是不是演出**。不是演出的，就不该上带子。
+
+## 落地形状
+
+- `src/agent/pointing.ts`：`PointAt{x,y}` 与纯函数 `pointedMessage(label, at, question)`。夹取、两位小数、空 label 退回"那件东西"都在这里；它是整条链上唯一需要被单测钉死的自由文本形状。
+- `src/engine/StageView.tsx`：`PropView` 多 `pointable` / `pointed` / `onPoint`；2D 与 3D 两个分支同样挂类名、`title="指着这一处问"` 和点击优先级（probe 的 `onPick` 优先于指认）。`StageView` 里 `pointable = pointing && s.gate === null && s.live`；`pointFrom` 做屏幕→世界→道具框内比例；`point-mark` 画在 `.world` 里，跟着镜头缩放。
+- `src/App.tsx`：`pointing` / `pointed` 两个学习者状态；`pointedNow` 从 `snap` 派生（live、无卡、无待走到的卡、道具仍在台上）。`speak` 在 `pointedNow` 存在时把输入包进 `pointedMessage`；`askPointed("")` 是一键「这里没懂」；「重来」/载入/导入/开场都清掉指认。console 里多 chip、占位符和发送键字（「问这一处」），传输栏多开关与提示条。
+- `src/index.css`：`.prop.pointable`（十字光标 + 浅蓝 hover）、`.prop.pointed`（琥珀光）、`.point-mark`（板上的十字圈）、`.point-hint`（琥珀提示条）、`.point-chip`（发送口上方的落点条）。
+- `src/agent/prompt.ts`：一条教学纪律，讲清"他指了哪儿就先看哪儿"和"换载体重演，不要重讲整块板"。
+
+## 三层测试设计
+
+- **形状**：纯函数层钉消息的六个面（带问题、空问题、label 空白、夹取/两位小数、坏数字、没有来源标记）；`StageView` 层钉屏幕点→世界点→比例的换算（正中 0.5/0.5、框外夹到 0/1）、模式外不接点、卡开着时让位给 drag。
+- **价钱**：指认与发送都不往带子上加一笔 —— 发送前后 `stage.log.all().length` 不变；不是 answer、不是坐标 op；`gate` 仍为 null；`playing` 仍为 true（不停表）。「这里没懂」一键同样不落带。
+- **护栏**：录像（`live=false`）没有「指着问」、点道具也不抬 chip；✕ 收手后一个字节也不送；指过的东西 `discard` 后 chip 与十字圈一起消失；`askedGate` 存在时开关禁用（派生条件与按钮禁用同一句）；卡开着时 StageView 的 `pointable` 为 false。
+
+## 实测与反向验证（同一轮补完）
+
+`src/agent/pointing.test.ts` 6 条、`src/engine/point.test.ts` 9 条，共 15 条新；全套 525 → 540 条绿（43 个文件）；`npx tsc -b` 干净、`npm run lint` 0 warnings / 0 errors。
+
+反向验证五刀（改后代码上做，跑完精确还原）：
+- M1 `StageView.pointFrom` 直接把世界坐标交出去（不做比例换算）—— 4 条红（两处换算断言 + 两条 App 发送断言）。
+- M2 `speak` 不再理会 `pointedNow` —— 1 条红（打字发送没有带坐标）。
+- M3 `StageView.pointable` 去掉 `s.gate === null` —— 1 条红（卡开着时道具仍挂着可指记号）。
+- M4 `pointedNow` 不再检查道具是否还在台上 —— 1 条红（`discard` 后 chip 仍活着）。
+- M5 `frac` 不夹不圆 —— 1 条红（框外坐标直接写进句子）。
+
+测试那一头还踩到一个 jsdom 的坑：`StageView` 的 `useLayoutEffect` 会读 `clientWidth/clientHeight`，jsdom 没有布局所以读回 0，于是 `usable.h = Math.max(40, 0)` 把 `oy` 抬到 20，`scale` 变 0；`pointFrom` 里 `scale || 1` 保住了 x，却没保住 y，同样的正中点击会算成 `y=0.30`。修法不是在产品代码里加特判，而是在测试里把 `Element.prototype.clientWidth/clientHeight` 钉成 1600/900 —— 屏幕像素和世界单位一比一，换算才有一个确定的答案。这也是这一轮唯一一个"先红后绿"不是设计问题、而是测试环境问题的例子。

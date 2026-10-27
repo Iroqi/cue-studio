@@ -391,6 +391,57 @@ button.x {
   cursor: grabbing;
 }
 
+/* 他自己要指、不是卡在问他：整块板都接住一次点击，所以不脉冲、不点名，只把光标换成十字。
+   指过的那一件留一层琥珀的光——和"导演在强调"的蓝区分开，这是"我这里没懂"的位置。 */
+.prop.pointable {
+  cursor: crosshair;
+}
+
+.prop.pointable:hover {
+  filter: drop-shadow(0 0 10px rgba(125, 211, 252, 0.8));
+}
+
+.prop.pointed {
+  filter: drop-shadow(0 0 12px rgba(253, 230, 138, 0.72));
+}
+
+/* 他指的那一点：板上的十字圈，跟着镜头缩放。不是高亮演出，是一次指认留下的落点。 */
+.point-mark {
+  position: absolute;
+  z-index: 5;
+  width: 20px;
+  height: 20px;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--am);
+  border-radius: 50%;
+  background: rgba(253, 230, 138, 0.12);
+  box-shadow: 0 0 0 3px rgba(253, 230, 138, 0.12), 0 0 18px rgba(253, 230, 138, 0.45);
+  pointer-events: none;
+}
+
+.point-mark::before,
+.point-mark::after {
+  content: "";
+  position: absolute;
+  background: var(--am);
+}
+
+.point-mark::before {
+  left: 50%;
+  top: -5px;
+  bottom: -5px;
+  width: 1px;
+  transform: translateX(-50%);
+}
+
+.point-mark::after {
+  top: 50%;
+  left: -5px;
+  right: -5px;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
 /* He let go of the prop but has not confirmed yet: a chip up top (the hint banner is pointer-events:
  * none so the stage stays reachable; the chip re-enables events for its own buttons) that asks
  * 「就是这里？」 — confirming lands the position on the tape, 「还原」 returns the prop to its anchor. */
@@ -516,6 +567,15 @@ button.x {
   margin-top: 3px;
   font-size: 13px;
   color: var(--cy);
+}
+
+/* 他自己举的手，不是导演出的题：提示条走琥珀色，和卡片的蓝分开。 */
+.probe-hint.point-hint {
+  border-color: rgba(253, 230, 138, 0.45);
+}
+
+.probe-hint.point-hint span {
+  color: var(--am);
 }
 
 /* The escape hatch: two quiet doors under every card — "I can't" is a plea, "skip this" is a choice,
@@ -983,6 +1043,52 @@ button.x {
   font-size: 11.5px;
   letter-spacing: 0.03em;
   padding: 0 11px;
+}
+
+/* 指过的那一处，在发送口上方留一行：句子里的"这里"有具体位置，写到一半也不会忘了指哪儿。
+   琥珀是落点，不是错误；✕ 是收手，不是取消一次提交。 */
+.point-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 4px;
+  font-size: 12.5px;
+  color: var(--am);
+}
+
+.point-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.point-chip button {
+  flex: none;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid rgba(253, 230, 138, 0.38);
+  color: var(--am);
+  font-size: 12px;
+}
+
+.point-chip button:hover {
+  background: rgba(253, 230, 138, 0.12);
+  border-color: rgba(253, 230, 138, 0.6);
+}
+
+.point-chip button.x {
+  margin-left: auto;
+  padding: 0 8px;
+  border-color: transparent;
+  color: var(--dim);
+}
+
+.point-chip button.x:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--fg);
 }
 
 .status {

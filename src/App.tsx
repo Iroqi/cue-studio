@@ -4,6 +4,7 @@ import { Narrator } from "./engine/narrator";
 import { decodeTape, encodeTape } from "./engine/share";
 import { StageView } from "./engine/StageView";
 import { Teacher, ESC_RETRY, ESC_SKIP } from "./agent/loop";
+import { pointedMessage, type PointAt } from "./agent/pointing";
 import { asideScore, continuationScore, paintScript, rehearsalScore } from "./agent/rehearsal";
 import { ModelConfig } from "./ui/ModelConfig";
 import { BeatRail } from "./ui/BeatRail";
@@ -157,6 +158,12 @@ export default function App() {
   const [railOpen, setRailOpen] = useState(false);
   /** Offers the learner already clicked this session: one phrase per door, no double-send. */
   const [offersConsumed, setOffersConsumed] = useState<Set<number>>(new Set());
+  /**
+   * 指着问：板上的任意一处都能成为他的提问对象。和 3D 的拖动角度同一句 —— 这是他此刻指着哪，
+   * 不是这一堂课的内容，所以不进带子、不进分享、不判分；只有他发出去的那句话会到导演手里。
+   */
+  const [pointing, setPointing] = useState(false);
+  const [pointed, setPointed] = useState<{ id: string; label: string; at: PointAt } | null>(null);
 
   useLayoutEffect(() => {
     const el = dockRef.current;
@@ -221,6 +228,8 @@ export default function App() {
       (entries) => {
         stage.load(entries);
         setOffersConsumed(new Set());
+        setPointing(false);
+        setPointed(null);
         // 报的是**进得来**的那几格，不是地址里带着的那几格：门会把说不清自己在哪儿的一格丢掉，
         // 而这一句是给点链接的人看的，他得知道自己眼前演的是多少刀。
         setStatus(`载入别人排过的一场：${stage.log.length} 条指令，重放它一个模型都没叫。`);
@@ -245,6 +254,8 @@ export default function App() {
     history.replaceState(null, "", location.pathname + location.search);
     stage.reset();
     setOffersConsumed(new Set());
+    setPointing(false);
+    setPointed(null);
     setLines([]);
     dropTeacher();
     if (cfg.scripted) {
@@ -286,8 +297,38 @@ export default function App() {
     await t.respond(q);
   };
 
+  /**
+   * 他此刻指着的那一处。这里派生的不是"有没有进模式"，而是"指着的那件东西此刻还在不在台上" ——
+   * 倒带、换场、discard 都可以让一件东西离开画面；指着一件已经不在的东西发问，比不问更糟。
+   * 卡一开，板上的问题就让位给卡：两个入口不许同时活着（probe / drag 的拾取也是这一句）。
+   */
+  const pointedNow =
+    pointed && !snap.gate && snap.askedGate == null && snap.live && snap.props.some((p) => p.id === pointed.id)
+      ? pointed
+      : null;
+  /** 点一件台上的东西：记下它和那一点的比例，模式随即收起，板回到"可以接着看"的样子。 */
+  const handlePoint = (id: string, at: PointAt) => {
+    const p = snap.props.find((pp) => pp.id === id);
+    if (!p) return;
+    setPointed({ id, label: p.label || id, at });
+    setPointing(false);
+  };
+  /** 指着问的发送口：和打字、offer 走同一条 `sendText`，只是这句话里多了一个他指过的坐标。 */
+  const askPointed = (q: string) => {
+    if (!pointedNow) return;
+    setEntry("");
+    setPointed(null);
+    void sendText(pointedMessage(pointedNow.label, pointedNow.at, q));
+  };
+
   const speak = async () => {
     const q = entry.trim();
+    if (pointedNow) {
+      setEntry("");
+      setPointed(null);
+      await sendText(pointedMessage(pointedNow.label, pointedNow.at, q));
+      return;
+    }
     if (!q) return;
     setEntry("");
     await sendText(q);
@@ -307,6 +348,8 @@ export default function App() {
       try {
         stage.load(JSON.parse(t) as OpEntry[]);
         setOffersConsumed(new Set());
+        setPointing(false);
+        setPointed(null);
         setStatus("载入录像：这是上一场的过程产物，重放它不需要任何模型。");
         stage.play();
       } catch (e) {
@@ -388,7 +431,15 @@ export default function App() {
   return (
     <div className={"app" + (drawer ? " open" : "")} style={{ "--dock": `${dockH}px` } as CSSProperties}>
       <main>
-        <StageView stage={stage} bottomInset={dockH} onPick={handlePick} onDragAnswer={handleDragAnswer} />
+        <StageView
+          stage={stage}
+          bottomInset={dockH}
+          onPick={handlePick}
+          onDragAnswer={handleDragAnswer}
+          pointing={pointing && !gate && snap.askedGate == null}
+          pointed={pointedNow ? { id: pointedNow.id, at: pointedNow.at } : null}
+          onPoint={handlePoint}
+        />
         <input
           className="timeline"
           type="range"
@@ -414,6 +465,25 @@ export default function App() {
           <button onClick={() => stage.rewindToBeatStart()} title="回到上一拍的开头重演">
             ⟲ 一拍
           </button>
+          {snap.live && (
+            <button
+              className={pointing ? "on" : ""}
+              disabled={snap.props.length === 0 || !!gate || snap.askedGate != null}
+              onClick={() => {
+                setPointing((on) => !on);
+                setPointed(null);
+              }}
+              title={
+                snap.props.length === 0
+                  ? "台上还没有东西可指"
+                  : gate || snap.askedGate != null
+                    ? "先答完这张卡 —— 停表时板上的点击已经属于它"
+                    : "点台上的一件东西，指着具体的一处问 —— 不停表、不判分，和你自己打字同一条路"
+              }
+            >
+              指着问
+            </button>
+          )}
           <button className={liveTail ? "on" : ""} onClick={() => stage.goLive()} title="别停在旧的一秒，跟到导演刚写下的那一拍">
             ● 实时
           </button>
@@ -539,6 +609,14 @@ export default function App() {
             <EscapeRow onEscape={escapeGate} />
           </div>
         )}
+        {/* 他自己举手：表在走的时候指一件台上的东西，指着具体的一处问。没有卡、没有停表 ——
+            这不是一次考试，是他把"这里"说出来。 */}
+        {pointing && !gate && snap.askedGate == null && snap.live && snap.props.length > 0 && (
+          <div className="probe-hint point-hint">
+            <p>点一下台上的东西 —— 指着具体的一处问</p>
+            <span>点完在下面写你的问题；也可以直接说「这里没懂」</span>
+          </div>
+        )}
         {verdict && <div className={"verdict" + (verdict.ok === true ? " ok" : verdict.ok === false ? " miss" : "")}>{verdict.text}</div>}
 
         {/* Doors the director opened: one click sends its phrase down the same path as typing. Live it
@@ -589,25 +667,49 @@ export default function App() {
               )}
             </div>
             {railOpen && <BeatRail stage={stage} teacher={teacherState} t={snap.t} />}
+            {/* 指完之后的落点：他指的哪一件、指的哪儿都还看得见；一句话就发，或者干脆「这里没懂」。 */}
+            {pointedNow && (
+              <div className="point-chip">
+                <span>指着「{pointedNow.label}」</span>
+                <button onClick={() => askPointed("")} title="不用写问题，直接说这一处没懂">
+                  这里没懂
+                </button>
+                <button className="x" aria-label="不指着问了" onClick={() => setPointed(null)} title="收起这一指">
+                  ✕
+                </button>
+              </div>
+            )}
             <div className="composer">
               <input
                 value={entry}
                 onChange={(e) => setEntry(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && (started ? void speak() : void start())}
                 placeholder={
-                  intent === "answer"
-                    ? "不选也行 —— 直接说你怎么想的，这就当作对那个问题的回答…"
-                    : intent === "open"
-                      ? "给一个题目：向量加法 / 梯度下降 / 复数乘法…"
-                      : intent === "queue"
-                        ? "导演在排第一拍。先说的话不会掉，这一排落定就接上："
-                        : intent === "continue"
-                          ? "接着这块板说：往下讲、问为什么、说哪儿没懂…"
-                          : "打断演出，问它一件事…"
+                  pointedNow
+                    ? `指着「${pointedNow.label}」问：哪里不懂、它为什么在这儿…`
+                    : intent === "answer"
+                      ? "不选也行 —— 直接说你怎么想的，这就当作对那个问题的回答…"
+                      : intent === "open"
+                        ? "给一个题目：向量加法 / 梯度下降 / 复数乘法…"
+                        : intent === "queue"
+                          ? "导演在排第一拍。先说的话不会掉，这一排落定就接上："
+                          : intent === "continue"
+                            ? "接着这块板说：往下讲、问为什么、说哪儿没懂…"
+                            : "打断演出，问它一件事…"
                 }
               />
               <button className="go" onClick={() => (started ? void speak() : void start())}>
-                {intent === "answer" ? "回答" : intent === "open" ? "开场" : intent === "queue" ? "等一下说" : intent === "continue" ? "接着说" : "打断"}
+                {pointedNow
+                  ? "问这一处"
+                  : intent === "answer"
+                    ? "回答"
+                    : intent === "open"
+                      ? "开场"
+                      : intent === "queue"
+                        ? "等一下说"
+                        : intent === "continue"
+                          ? "接着说"
+                          : "打断"}
               </button>
               <button
                 onClick={() => {
@@ -615,6 +717,8 @@ export default function App() {
                   stage.reset();
                   dropTeacher();
                   setEntry("");
+                  setPointing(false);
+                  setPointed(null);
                   setStatus("舞台清空。");
                 }}
               >

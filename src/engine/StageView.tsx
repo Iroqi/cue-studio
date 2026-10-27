@@ -209,7 +209,10 @@ function PropView({
   pickable = false,
   movable = false,
   offset = null,
+  pointable = false,
+  pointed = null,
   onPick,
+  onPoint,
 }: {
   p: VisibleProp;
   t: number;
@@ -218,7 +221,15 @@ function PropView({
   movable?: boolean;
   /** Where the learner has moved it, in world units — learner state, never part of the tape. */
   offset?: { dx: number; dy: number } | null;
+  /**
+   * The learner pointed at this prop while asking: the whole board is a question surface, not only
+   * when a card is open. No gate is open in this mode, so it never competes with a probe or a drag.
+   */
+  pointable?: boolean;
+  /** The exact spot he indicated, as fractions of this prop's own box — the same units as `camera.at`. */
+  pointed?: { x: number; y: number } | null;
   onPick?: (id: string) => void;
+  onPoint?: (e: React.MouseEvent) => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const signature = `${p.svg}|${p.html}|${p.css}`;
@@ -278,23 +289,56 @@ function PropView({
   };
 
   if (p.scene3d) {
-    const cls = ["prop", "prop3d", p.highlight && `hl-${p.highlight}`, pickable && "pickable", movable && "movable"].filter(Boolean).join(" ");
+    const cls = ["prop", "prop3d", p.highlight && `hl-${p.highlight}`, pickable && "pickable", movable && "movable", pointable && "pointable", pointed && "pointed"].filter(Boolean).join(" ");
     return (
-      <div className={cls} data-prop={p.id} style={style} onClick={pickable && onPick ? () => onPick(p.id) : undefined}>
+      <div
+        className={cls}
+        data-prop={p.id}
+        style={style}
+        title={pointable ? "指着这一处问" : undefined}
+        onClick={pickable && onPick ? () => onPick(p.id) : pointable ? onPoint : undefined}
+      >
         <Scene3D spec={p.scene3d} t={t} />
       </div>
     );
   }
 
-  const cls = ["prop", p.awaiting && "draft", p.highlight && `hl-${p.highlight}`, pickable && "pickable", movable && "movable"].filter(Boolean).join(" ");
-  return <div ref={ref} className={cls} data-prop={p.id} style={style} onClick={pickable && onPick ? () => onPick(p.id) : undefined} />;
+  const cls = ["prop", p.awaiting && "draft", p.highlight && `hl-${p.highlight}`, pickable && "pickable", movable && "movable", pointable && "pointable", pointed && "pointed"].filter(Boolean).join(" ");
+  return (
+    <div
+      ref={ref}
+      className={cls}
+      data-prop={p.id}
+      style={style}
+      title={pointable ? "指着这一处问" : undefined}
+      onClick={pickable && onPick ? () => onPick(p.id) : pointable ? onPoint : undefined}
+    />
+  );
 }
 
 function veilOpacity(progress: number): number {
   return progress < 0.5 ? progress * 2 : (1 - progress) * 2;
 }
 
-export function StageView({ stage, bottomInset = 0, onPick, onDragAnswer }: { stage: Stage; bottomInset?: number; onPick?: (id: string) => void; onDragAnswer?: (x: number, y: number) => void }) {
+export function StageView({
+  stage,
+  bottomInset = 0,
+  onPick,
+  onDragAnswer,
+  pointing = false,
+  pointed = null,
+  onPoint,
+}: {
+  stage: Stage;
+  bottomInset?: number;
+  onPick?: (id: string) => void;
+  onDragAnswer?: (x: number, y: number) => void;
+  /** The learner is in "point at a spot and ask" mode. Live only, and never while a card is open. */
+  pointing?: boolean;
+  /** What he pointed at: a prop id and fractions of that prop's own box. */
+  pointed?: { id: string; at: { x: number; y: number } } | null;
+  onPoint?: (id: string, at: { x: number; y: number }) => void;
+}) {
   const s = useSyncExternalStore(stage.subscribe, stage.getSnapshot);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ w: 1600, h: 900 });
@@ -387,6 +431,27 @@ export function StageView({ stage, bottomInset = 0, onPick, onDragAnswer }: { st
   // 揭晓那一刀（按词步进）只跟旁白有关：没有旁白时它是 0，有旁白时两种样式共用同一刀。
   const shownNarration = s.narration ? revealCut(s.narration.text, s.narration.reveal) : 0;
 
+  /**
+   * 指着问只在**没有卡开着**的时候存在：停表时板上的可点已经属于 probe / drag，两套拾取
+   * 不许同时活着；录像（live=false）也不问人，和 offer 的静态门同一句。
+   */
+  const pointable = pointing && s.gate === null && s.live;
+  /**
+   * 屏幕点 → 世界点 → 道具自身框里的比例。要的是 `camera.at` 那套 0..1，不是屏幕像素：
+   * 导演拿到数就能把镜头直接怼到那一点，不用猜。换算用的是这一帧相机自己的 ox/oy/scale；
+   * 测试把台面钉成 1600x900，屏幕像素才和世界单位一比一。
+   */
+  const pointFrom = (id: string, p: VisibleProp) => (e: React.MouseEvent) => {
+    if (!onPoint) return;
+    const host = hostRef.current;
+    const r = host?.getBoundingClientRect() ?? { left: 0, top: 0, width: 0, height: 0 };
+    const wx = (e.clientX - r.left - ox) / (scale || 1);
+    const wy = (e.clientY - r.top - oy) / (scale || 1);
+    const clamp = (n: number) => Math.min(1, Math.max(0, n));
+    onPoint(id, { x: clamp((wx - p.box.x) / (p.box.w || 1)), y: clamp((wy - p.box.y) / (p.box.h || 1)) });
+  };
+  const marked = pointed ? s.props.find((p) => p.id === pointed.id) : undefined;
+
   return (
     <div className="stage" data-track={s.track} ref={hostRef}>
       {/* 台下的光：scene 定下的气氛层。它不跟镜头走——镜头推的是板，房间不动。 */}
@@ -408,8 +473,19 @@ export function StageView({ stage, bottomInset = 0, onPick, onDragAnswer }: { st
             onPick={onPick}
             movable={movable?.has(p.id) ?? false}
             offset={movable?.has(p.id) ? dragOffset : null}
+            pointable={pointable}
+            pointed={pointed?.id === p.id ? pointed.at : null}
+            onPoint={pointFrom(p.id, p)}
           />
         ))}
+        {/* 他指的那一点：画在板上、跟着镜头缩放 —— 它标的是"我这里没懂"，不是一次高亮演出。 */}
+        {marked && pointed && (
+          <div
+            className="point-mark"
+            aria-hidden
+            style={{ left: marked.box.x + pointed.at.x * marked.box.w, top: marked.box.y + pointed.at.y * marked.box.h }}
+          />
+        )}
       </div>
       {/* He let go but has not confirmed yet: the prop stays where he put it, and the chip asks. */}
       {dropped && dragProp && (
