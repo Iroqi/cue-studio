@@ -109,7 +109,11 @@ export function ModelConfig({ cfg, onChange, onEvent }: Props) {
     );
   };
 
-  const real = cfg.providers.filter((p) => p.id !== "scripted");
+  // Scripted rehearsal providers are a dev registry that never lands in `cfg.providers`, but the
+  // predicate must say the same thing `getModels` uses (`!x.id.startsWith("scripted-")`) — one day a
+  // saved config could carry one in, and a filter that misses it would show a fake row the role
+  // dropdowns can point at.
+  const real = cfg.providers.filter((p) => !p.id.startsWith("scripted-"));
   const rolesFor = (role: "director" | "painter") => (
     <div className="role-row">
       <span className="role-name">{role === "director" ? "编导 / 教师" : "舞台美术（画图）"}</span>

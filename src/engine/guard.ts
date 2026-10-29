@@ -264,8 +264,8 @@ function revise<T extends object>(op: T, changes: Partial<T>): T {
  * (`Math.min(...boxes)`), which is a stack argument list: a recording that named 130k targets did not
  * produce a bad shot, it produced a RangeError inside the compiler and a board that never loads.
  */
-function names(list: unknown): string[] | undefined | null {
-  if (typeof list === "string") return list.length <= MAX_NAME ? null : [list.slice(0, MAX_NAME)];
+function names(list: unknown): string | string[] | undefined | null {
+  if (typeof list === "string") return list.length <= MAX_NAME ? null : list.slice(0, MAX_NAME);
   if (!Array.isArray(list)) return list === undefined ? undefined : [];
   const ok = (x: unknown) => typeof x === "string" && x.length <= MAX_NAME;
   return list.length <= MAX_TARGETS && list.every(ok) ? null : list.slice(0, MAX_TARGETS).map((x) => name(x));
@@ -423,8 +423,8 @@ export function guardOp(op: Op, notes?: (n: string) => void): Op {
       if (notes && typeof op.mode === "string" && mode !== op.mode) notes(`camera.mode=${op.mode} 不认，回退 ${mode}`);
       numNote("duration", op.duration, duration, "ms");
       if (notes && target !== null && target !== op.target && target !== undefined) {
-        if (typeof op.target === "string") notes(`camera.target 超过 ${MAX_NAME} 字，截到 ${target[0]?.length ?? 0} 字`);
-        else if (Array.isArray(op.target)) notes(op.target.length > MAX_TARGETS ? `camera.target 超过 ${MAX_TARGETS} 个，截到 ${target.length} 个` : "camera.target 含非法项，已截");
+        if (typeof op.target === "string") notes(`camera.target 超过 ${MAX_NAME} 字，截到 ${(target as string).length} 字`);
+        else if (Array.isArray(op.target)) notes(op.target.length > MAX_TARGETS ? `camera.target 超过 ${MAX_TARGETS} 个，截到 ${(target as string[]).length} 个` : "camera.target 含非法项，已截");
         else if (op.target !== undefined) notes("camera.target 不是名字列表，已清空");
       }
       if (notes && op.region !== undefined && region !== op.region) notes("camera.region 越界或不可读，已修回可读框");
@@ -437,7 +437,7 @@ export function guardOp(op: Op, notes?: (n: string) => void): Op {
       return revise(op, {
         mode,
         duration,
-        ...(target === null ? {} : { target: target as string[] | undefined }),
+        ...(target === null ? {} : { target }),
         region,
         center,
         zoom,
@@ -575,10 +575,13 @@ export function guardOp(op: Op, notes?: (n: string) => void): Op {
       let value = bound(op.value);
       if (min >= max) {
         // Inverted pair: swap. An equal pair: give the value room both sides so the rod has length.
+        // The widening happens AFTER the ±BIG clamp, so it has to be pinned back into it: a corrupt
+        // tape whose min === max === ±BIG would otherwise widen a rod past the bound the rest of the
+        // card promises (slider min/max are numbers a learner has to read, and the contract says ±1e6).
         if (min > max) [min, max] = [max, min];
         else {
-          min = value - (value === 0 ? 1 : Math.abs(value));
-          max = value + (value === 0 ? 1 : Math.abs(value));
+          min = Math.max(value - (value === 0 ? 1 : Math.abs(value)), -BIG);
+          max = Math.min(value + (value === 0 ? 1 : Math.abs(value)), BIG);
         }
       }
       if (value < min) value = min;
