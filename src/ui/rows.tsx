@@ -60,7 +60,10 @@ export function describeOp(e: OpEntry, gates: Map<number, Gate>): string {
     case "discard":
       return `discard ${s("id")}`;
     case "camera": {
-      const where = Array.isArray(o.target) ? (o.target as string[]).join("+") : s("follow");
+      // 名字两种形状都行（`target?: string | string[]`，恢复的旧带可以带裸字符串），所以两种都要
+      // 认：字符串直接印，数组拼 +，都没有才轮到 follow —— 以前裸字符串落进 follow 那一格，印出来是
+      // 空的，日志里那刀镜头像没指任何东西。
+      const where = typeof o.target === "string" ? (o.target as string) : Array.isArray(o.target) ? (o.target as string[]).join("+") : s("follow");
       const at = o.at as { x?: number; y?: number } | undefined;
       const bits = [
         `camera ${s("mode")}`,
