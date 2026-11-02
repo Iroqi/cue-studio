@@ -17,14 +17,23 @@ function wordEnds(text: string): number[] {
     ends = [];
     for (const s of segmenter.segment(text)) ends.push(s.index + s.segment.length);
   } catch {
-    ends = Array.from({ length: text.length }, (_, i) => i + 1);
+    // 逐**码点**给界，不是逐 UTF-16 码元：代理对（emoji / 生僻字）要整词亮，逐码元会把
+    // "🚀" 的 0..1 当作一个界，字幕刚亮就劈出半个字符。
+    ends = [];
+    let acc = 0;
+    for (const ch of text) {
+      acc += ch.length;
+      ends.push(acc);
+    }
   }
   if (wordEndsCache.size > 16) wordEndsCache.clear();
   wordEndsCache.set(text, ends);
   return ends;
 }
 
-/** 至少亮一个字：行头那一格不亮，说话的暗示（光标）就没地方站。 */
+/** 至少亮一个**完整字符**（码点）：行头那一格不亮，说话的暗示（光标）就没地方站；而代理对
+ *  占两个码元，`Math.max(1, …)` 那种按码元的硬抬会把 emoji 劈成半个（�），所以出口对齐到
+ *  码点边界 —— 首字符是代理对时亮整个字符。 */
 export function revealCut(text: string, reveal: number): number {
   if (!text) return 0;
   const target = text.length * Math.min(1, Math.max(0, reveal));
@@ -33,7 +42,8 @@ export function revealCut(text: string, reveal: number): number {
     if (end > target) break;
     said = end;
   }
-  return Math.max(1, Math.min(said, text.length));
+  if (said === 0) return [...text][0].length;
+  return Math.min(said, text.length);
 }
 
 /**
