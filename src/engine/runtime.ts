@@ -223,6 +223,12 @@ export class Stage {
     this.t = 0;
     this.live = true;
     this.followTail = true;
+    // 重开场 / 清空重来要把播放状态一并归零：上一场还在走（rAF 还挂着、`playing` 还亮着）时
+    // reset，下一场开场的 `play()` 会被 `if (this.playing) return` 一口吞掉，时钟从此卡死。
+    this.playing = false;
+    this.awaitingAudience = false;
+    if (typeof cancelAnimationFrame !== "undefined") cancelAnimationFrame(this.raf);
+    this.raf = 0;
     this.artFor.clear();
     this.painting.clear();
     this.turnOpen = false;
@@ -366,7 +372,9 @@ export class Stage {
   }
 
   setSpeed(x: number) {
-    this.speed = x;
+    // 播放速率是正数才有意义：负速让 `dt` 为负、时钟倒走出带子的 0 点（渲染问负时刻），零速让
+    // rAF 空转着"播放中"却一帧不走。给不了合法速率就回到 1×。
+    this.speed = Number.isFinite(x) && x > 0 ? x : 1;
     this.emit();
   }
 
