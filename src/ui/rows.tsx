@@ -100,6 +100,19 @@ export function describeOp(e: OpEntry, gates: Map<number, Gate>): string {
       return `等待：${s("reason")}`;
     case "link":
       return `link ${s("from")} ${s("relation")} ${s("to")}`;
+    case "probe": {
+      // `targets` 是数组，`s()` 只认字符串，自己拼。
+      const t = Array.isArray(o.targets) ? (o.targets as string[]).join("+") : "";
+      return `指认 ${s("prompt")}（${t}）`;
+    }
+    case "dial":
+      return `拨杆 ${s("prompt")}`;
+    case "type":
+      return `打字 ${s("prompt")}`;
+    case "drag":
+      return `搬动 ${s("prompt")}`;
+    case "offer":
+      return `按钮 ${s("label")}`;
     default:
       return o.kind;
   }
