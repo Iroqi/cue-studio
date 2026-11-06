@@ -235,12 +235,18 @@ const text = (v: unknown): string | undefined => (typeof v === "string" ? (v.len
 /**
  * The enums the interpreter switches on without a default branch. `motionOffset` returns `undefined`
  * for a mode it does not know, and `displaced` then throws — so one bad string from a recording takes
- * the whole board down. Everything else (easing, veil style) already has a fallback where it is read.
+ * the whole board down. Easing has a fallback where it is read (`EASES[op.easing] ?? EASES.ease`),
+ * but the visual enumerations do not: `highlight.style` and `transition.style` are read as
+ * ``hl-${style}`` / ``veil-${style}`` CSS class names, and a name with no rule is just no effect —
+ * the emphasis or the figure silently vanishes. So those two are widened here as well, exactly like
+ * light and motion: the door corrects and says what it corrected (round 7).
  */
 const MOTION_MODES = new Set(["oscillate", "approach", "orbit", "iterate", "flow"]);
 const LIGHT_MOODS = new Set(["board", "study", "space", "lab"]);
 const MOTION_AXES = new Set(["x", "y", "both"]);
 const CAMERA_MODES = new Set(["fit", "focus", "pan", "zoom", "track"]);
+const HIGHLIGHT_STYLES = new Set(["pulse", "outline", "dim-rest", "shake"]);
+const TRANSITION_STYLES = new Set(["dissolve", "wipe", "match-cut", "split"]);
 
 function oneOf<T extends string>(v: unknown, allowed: Set<string>, dflt: T): T {
   return typeof v === "string" && allowed.has(v) ? (v as T) : dflt;
@@ -457,9 +463,11 @@ export function guardOp(op: Op, notes?: (n: string) => void): Op {
     case "transition": {
       const to = name(op.to);
       const duration = ms(op.duration, 1200);
+      const style: "dissolve" | "wipe" | "match-cut" | "split" = oneOf(op.style, TRANSITION_STYLES, "dissolve");
+      if (notes && typeof op.style === "string" && style !== op.style) notes(`transition.style=${op.style} 不认，回退 ${style}`);
       trunc("to", op.to, to, MAX_NAME);
       numNote("duration", op.duration, duration, "ms");
-      return revise(op, { to, duration });
+      return revise(op, { to, duration, style });
     }
     case "light": {
       const mood: Mood = oneOf(op.mood, LIGHT_MOODS, "board");
@@ -469,9 +477,11 @@ export function guardOp(op: Op, notes?: (n: string) => void): Op {
     case "highlight": {
       const target = name(op.target);
       const duration = ms(op.duration, 1500);
+      const style: "pulse" | "outline" | "dim-rest" | "shake" = oneOf(op.style, HIGHLIGHT_STYLES, "pulse");
+      if (notes && typeof op.style === "string" && style !== op.style) notes(`highlight.style=${op.style} 不认，回退 ${style}`);
       trunc("target", op.target, target, MAX_NAME);
       numNote("duration", op.duration, duration, "ms");
-      return revise(op, { target, duration });
+      return revise(op, { target, duration, style });
     }
     case "motion": {
       const id = name(op.id);
