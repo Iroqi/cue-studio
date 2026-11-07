@@ -22,8 +22,22 @@ export class Narrator {
    * which used to take the entire app down with it, because the host constructs a Narrator
    * unconditionally. Every speech call is behind this flag; the preference still persists, and the
    * voice simply engages the day the environment has one.
+   *
+   * Probe the surface, not just the name: a webview can expose `speechSynthesis` with `speak` and
+   * `cancel` but no `pause`/`resume`, and a partial stub is exactly how one learns that
+   * `typeof x !== "undefined"` proves nothing about the methods this class calls (the same lesson
+   * `typeof cancelAnimationFrame` taught in runtime.ts). A narrator missing one of these is not
+   * decoration that works — it is one more place the host crashes on teardown, so it stays off.
    */
-  private readonly supported = typeof speechSynthesis !== "undefined";
+  private readonly supported =
+    typeof speechSynthesis !== "undefined" &&
+    typeof SpeechSynthesisUtterance !== "undefined" &&
+    typeof speechSynthesis.getVoices === "function" &&
+    typeof speechSynthesis.addEventListener === "function" &&
+    typeof speechSynthesis.speak === "function" &&
+    typeof speechSynthesis.cancel === "function" &&
+    typeof speechSynthesis.pause === "function" &&
+    typeof speechSynthesis.resume === "function";
 
   constructor(stage: Stage) {
     this.stage = stage;
@@ -62,7 +76,13 @@ export class Narrator {
   private stop() {
     this.line = "";
     this.paused = false;
-    if (this.supported) speechSynthesis.cancel();
+    if (this.supported) {
+      speechSynthesis.cancel();
+      // `cancel()` clears the queue but not everywhere the engine's paused flag: leave it set and the
+      // next utterance is handed to a paused engine and never speaks. Resume is a no-op when it isn't
+      // paused, so this only puts the engine back in its resting state.
+      speechSynthesis.resume();
+    }
   }
 
   private sync() {
@@ -73,7 +93,12 @@ export class Narrator {
     if (key !== this.line) {
       speechSynthesis.cancel();
       this.line = key;
-      this.paused = false;
+      // The new line waits iff the clock is stopped. This used to reset `paused` to false outright, so
+      // a learner who paused and then dragged onto the next line left the engine paused while the
+      // narrator believed it was playing — pressing play again resumed nothing, and that line was
+      // silent for the rest of the lesson. Follow the clock instead, and clear any pause the engine
+      // still carries from the previous line (resume is a no-op when it isn't paused).
+      this.paused = !s.playing;
       if (!n) return;
       const u = new SpeechSynthesisUtterance(n.text);
       if (this.voice) u.voice = this.voice;
@@ -83,7 +108,9 @@ export class Narrator {
       const room = Math.max(n.duration - SETTLE_MS, 0) / 1000;
       const needs = speechMs(n.text) / 1000;
       u.rate = Math.max(0.8, needs / Math.max(room, 0.4));
+      if (!this.paused) speechSynthesis.resume();
       speechSynthesis.speak(u);
+      if (this.paused) speechSynthesis.pause();
       return;
     }
     if (!s.playing && !this.paused) {
