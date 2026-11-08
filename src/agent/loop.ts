@@ -82,7 +82,20 @@ export interface TeacherEvents {
 export class Teacher {
   messages: Message[] = [];
   teaching: TeachingState = { title: "", concepts: [], learner: "", beatsDone: 0 };
-  busy = false;
+  /**
+   * How many spins are on the floor. An aside plays *beside* the main line — its own transcript,
+   * its own track — so "the director is busy" is a count, not a flag: the aside is usually the
+   * shorter of the two and finishes first, and a boolean there would hand the stage back while the
+   * main turn is still laying work down. `continuesBoard()` would then let the learner start a
+   * third director on the main transcript, `turnOpen` would un-freeze an empty frame the running
+   * turn still owes, and `whenIdle()` would let a re-take reset the abort controller out from
+   * under a turn that is still waiting on the model.
+   */
+  private busyCount = 0;
+  /** True while any spin — main line or aside — is running. */
+  get busy(): boolean {
+    return this.busyCount > 0;
+  }
   /** The seq of the question the main turn is parked on, waiting for a real answer. */
   private parkedGate: number | null = null;
   /** Paints running (or queued) in the background, by prop id. */
@@ -241,9 +254,18 @@ export class Teacher {
       },
       { role: "user", content: text, timestamp: Date.now() },
     ];
-    await this.spin("aside", aside, track);
-    this.stage.endAside();
-    this.stage.seek(resumeAt);
+    // An aside is a courtesy, not the lesson. If it breaks halfway (a verb that throws while the
+    // board is drawn on the aside's track), the main line still has to get its stage back: skipping
+    // `endAside` leaves the board on `aside:N` at t=0, and the lesson the learner was watching
+    // disappears behind a failed interruption.
+    try {
+      await this.spin("aside", aside, track);
+    } catch (e) {
+      this.ev.onStatus?.(`插播出错：${(e as Error).message}`);
+    } finally {
+      this.stage.endAside();
+      this.stage.seek(resumeAt);
+    }
     this.messages.push({
       role: "user",
       content: `（学习者刚才打断问：${text}。你已经用插播回答过了。现在回到被打断的那一拍，从那里继续原来的演出。）`,
@@ -304,12 +326,16 @@ export class Teacher {
 
   private async spin(where: string, transcript: Message[] = this.messages, track = "main") {
     this.ensureLead();
-    this.busy = true;
-    // The turn owns the art debt: while it runs, an empty frame on the tape is a frame still coming,
-    // and the clock parks at the edge of the beat that was promised it. When the turn ends the debt
-    // is called in — a frame the director walked away from shows nothing rather than freezing the show.
-    this.stage.setTurnOpen(true);
-    this.ev.onBusy?.(true);
+    // Only the spin that opens the floor arms the debt and tells the host; a second one joining it
+    // (the aside) must not arm those twice, or the first to finish will disarm them for both.
+    if (this.busyCount++ === 0) {
+      // The turn owns the art debt: while it runs, an empty frame on the tape is a frame still
+      // coming, and the clock parks at the edge of the beat that was promised it. When the turn ends
+      // the debt is called in — a frame the director walked away from shows nothing rather than
+      // freezing the show.
+      this.stage.setTurnOpen(true);
+      this.ev.onBusy?.(true);
+    }
     let truncated = 0;
     try {
       for (let turn = 0; turn < 24; turn++) {
@@ -393,10 +419,11 @@ export class Teacher {
       }
       this.ev.onStatus?.("这一节先到这里（一拍讲不了更多）—— 接着说就往下演。");
     } finally {
-      this.busy = false;
-      this.stage.setTurnOpen(false);
-      this.ev.onBusy?.(false);
-      for (const wake of this.idleWaiters.splice(0)) wake();
+      if (--this.busyCount === 0) {
+        this.stage.setTurnOpen(false);
+        this.ev.onBusy?.(false);
+        for (const wake of this.idleWaiters.splice(0)) wake();
+      }
     }
   }
 
